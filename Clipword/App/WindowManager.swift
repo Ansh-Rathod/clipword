@@ -201,10 +201,13 @@ private final class PanelDelegate: NSObject, NSWindowDelegate {
 
     func windowDidResignKey(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
-        // Defer so sheets attached to this panel can become key first.
+        // Defer so sheets/menus can become key first.
         DispatchQueue.main.async { [weak self] in
             if window.attachedSheet != nil { return }
             if let key = NSApp.keyWindow, key.sheetParent === window { return }
+            // Stay open for in-app menus/popovers (pickers, context menus).
+            // Close only when focus left the app (outside click, Raycast, etc.).
+            guard !NSApp.isActive else { return }
             self?.manager?.hideMainWindow()
         }
     }

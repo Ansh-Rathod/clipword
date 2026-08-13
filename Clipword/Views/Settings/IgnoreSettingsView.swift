@@ -13,6 +13,7 @@ struct IgnoreSettingsView: View {
     @Environment(\.arrowFocusExit) private var arrowFocusExit
     @Environment(\.arrowFocusEnterToken) private var enterToken
     @Environment(\.contentShouldTakeFocus) private var contentShouldTakeFocus
+    @Environment(\.sidebarOpenForFocus) private var sidebarOpenForFocus
     @Environment(AppState.self) private var appState
 
     @State private var newApp = ""
@@ -196,14 +197,17 @@ struct IgnoreSettingsView: View {
         case .listMove:
             return .handled
         case .exitPrevious:
-            fieldActive = false
-            focus = nil
-            arrowFocusExit?(.previous)
+            if direction == .up {
+                fieldActive = false
+                focus = nil
+                arrowFocusExit?(current == focusRows.first?.first ? .chromeLeading : .chromeTrailing)
+            } else if direction == .left, sidebarOpenForFocus {
+                fieldActive = false
+                focus = nil
+                arrowFocusExit?(.previous)
+            }
             return .handled
         case .exitNext:
-            fieldActive = false
-            focus = nil
-            arrowFocusExit?(.next)
             return .handled
         }
     }

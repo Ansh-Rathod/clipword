@@ -13,6 +13,7 @@ struct ClipboardPopupView: View {
     @Environment(\.arrowFocusExit) private var arrowFocusExit
     @Environment(\.arrowFocusEnterToken) private var enterToken
     @Environment(\.contentShouldTakeFocus) private var contentShouldTakeFocus
+    @Environment(\.sidebarOpenForFocus) private var sidebarOpenForFocus
     @Default(.showSearchField) private var showSearchField
 
     @State private var editingItem: HistoryItem?
@@ -286,14 +287,18 @@ struct ClipboardPopupView: View {
         case .listMove:
             return .handled
         case .exitPrevious:
-            searchFieldActive = false
-            focus = nil
-            arrowFocusExit?(.previous)
+            if direction == .up {
+                searchFieldActive = false
+                focus = nil
+                arrowFocusExit?(current == .typeFilter ? .chromeLeading : .chromeTrailing)
+            } else if direction == .left, sidebarOpenForFocus {
+                searchFieldActive = false
+                focus = nil
+                arrowFocusExit?(.previous)
+            }
             return .handled
         case .exitNext:
-            searchFieldActive = false
-            focus = nil
-            arrowFocusExit?(.next)
+            // Stay on the page for → / ↓ at the edge.
             return .handled
         }
     }
@@ -334,8 +339,19 @@ struct ClipboardPopupView: View {
             if let item = selectedItem { historyStore.toggleBookmark(item) }
         case .pin:
             if let item = selectedItem { historyStore.togglePin(item) }
-        case .typeFilter, .appFilter:
-            return .ignored
+        case .typeFilter:
+            KeyboardContextMenu.popCategoryFilter(current: historyStore.activeCategory) { category in
+                historyStore.activeCategory = category
+                historyStore.applyFilters(using: searchService)
+            }
+        case .appFilter:
+            KeyboardContextMenu.popAppFilter(
+                apps: historyStore.availableApps,
+                current: historyStore.activeAppBundleId
+            ) { bundleId in
+                historyStore.activeAppBundleId = bundleId
+                historyStore.applyFilters(using: searchService)
+            }
         }
         return .handled
     }

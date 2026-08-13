@@ -25,6 +25,7 @@ struct AnalyticsRootView: View {
     @Environment(\.arrowFocusExit) private var arrowFocusExit
     @Environment(\.arrowFocusEnterToken) private var enterToken
     @Environment(\.contentShouldTakeFocus) private var contentShouldTakeFocus
+    @Environment(\.sidebarOpenForFocus) private var sidebarOpenForFocus
     @State private var section: AnalyticsSection = .overview
     @State private var preset: TimeRangePreset = .week
     @State private var customStart = Calendar.current.date(byAdding: .day, value: -7, to: .now) ?? .now
@@ -87,21 +88,26 @@ struct AnalyticsRootView: View {
         .onAppear { if contentShouldTakeFocus { focus = .section } }
         .onChange(of: enterToken) { _, _ in focus = .section }
         .onChange(of: contentShouldTakeFocus) { _, should in if !should { focus = nil } }
-        .onKeyPress(.rightArrow) { move(1) }
-        .onKeyPress(.leftArrow) { move(-1) }
-        .onKeyPress(.downArrow) { move(1) }
-        .onKeyPress(.upArrow) { move(-1) }
+        .onKeyPress(.rightArrow) { move(1, vertical: false) }
+        .onKeyPress(.leftArrow) { move(-1, vertical: false) }
+        .onKeyPress(.downArrow) { move(1, vertical: true) }
+        .onKeyPress(.upArrow) { move(-1, vertical: true) }
     }
 
-    private func move(_ delta: Int) -> KeyPress.Result {
+    private func move(_ delta: Int, vertical: Bool) -> KeyPress.Result {
         guard focus != nil else { return .ignored }
         var current = focus
         if advanceArrowFocus(&current, order: order, delta: delta) {
             focus = current
             return .handled
         }
-        focus = nil
-        arrowFocusExit?(delta < 0 ? .previous : .next)
+        if vertical, delta < 0 {
+            focus = nil
+            arrowFocusExit?(current == .section ? .chromeLeading : .chromeTrailing)
+        } else if !vertical, delta < 0, sidebarOpenForFocus {
+            focus = nil
+            arrowFocusExit?(.previous)
+        }
         return .handled
     }
 }

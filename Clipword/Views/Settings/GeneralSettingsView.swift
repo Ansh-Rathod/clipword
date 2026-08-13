@@ -22,6 +22,7 @@ struct GeneralSettingsView: View {
     @Environment(\.arrowFocusExit) private var arrowFocusExit
     @Environment(\.arrowFocusEnterToken) private var enterToken
     @Environment(\.contentShouldTakeFocus) private var contentShouldTakeFocus
+    @Environment(\.sidebarOpenForFocus) private var sidebarOpenForFocus
     @FocusState private var focus: GeneralFocus?
 
     private let order: [GeneralFocus] = [
@@ -59,8 +60,9 @@ struct GeneralSettingsView: View {
             Section("Keyboard") {
                 shortcutRow("← →", "Move within a row")
                 shortcutRow("↑ ↓", "Move between rows / list items")
-                shortcutRow("Return", "Activate · edit text field · paste from list")
+                shortcutRow("←", "To sidebar (only at page left edge, sidebar open)")
                 shortcutRow("→ / Return", "Enter page from sidebar")
+                shortcutRow("Return", "Activate · edit text field · paste from list")
                 shortcutRow("⌘K", "Item actions menu")
                 shortcutRow("Esc", "Leave text field / close")
             }
@@ -99,8 +101,13 @@ struct GeneralSettingsView: View {
             focus = current
             return .handled
         }
-        focus = nil
-        arrowFocusExit?(delta < 0 ? .previous : .next)
+        if vertical, delta < 0 {
+            focus = nil
+            arrowFocusExit?(.chromeLeading)
+        } else if !vertical, delta < 0, sidebarOpenForFocus {
+            focus = nil
+            arrowFocusExit?(.previous)
+        }
         return .handled
     }
 

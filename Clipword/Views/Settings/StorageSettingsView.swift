@@ -10,6 +10,7 @@ struct StorageSettingsView: View {
     @Environment(\.arrowFocusExit) private var arrowFocusExit
     @Environment(\.arrowFocusEnterToken) private var enterToken
     @Environment(\.contentShouldTakeFocus) private var contentShouldTakeFocus
+    @Environment(\.sidebarOpenForFocus) private var sidebarOpenForFocus
     @Default(.saveText) private var saveText
     @Default(.saveImages) private var saveImages
     @Default(.saveFiles) private var saveFiles
@@ -48,23 +49,28 @@ struct StorageSettingsView: View {
         .onAppear { if contentShouldTakeFocus { focus = order.first } }
         .onChange(of: enterToken) { _, _ in focus = order.first }
         .onChange(of: contentShouldTakeFocus) { _, should in if !should { focus = nil } }
-        .onKeyPress(.rightArrow) { move(1) }
-        .onKeyPress(.leftArrow) { move(-1) }
-        .onKeyPress(.downArrow) { move(1) }
-        .onKeyPress(.upArrow) { move(-1) }
+        .onKeyPress(.rightArrow) { move(1, vertical: false) }
+        .onKeyPress(.leftArrow) { move(-1, vertical: false) }
+        .onKeyPress(.downArrow) { move(1, vertical: true) }
+        .onKeyPress(.upArrow) { move(-1, vertical: true) }
         .onKeyPress(.return) { activate() }
         .onKeyPress(.space) { activate() }
     }
 
-    private func move(_ delta: Int) -> KeyPress.Result {
+    private func move(_ delta: Int, vertical: Bool) -> KeyPress.Result {
         guard focus != nil else { return .ignored }
         var current = focus
         if advanceArrowFocus(&current, order: order, delta: delta) {
             focus = current
             return .handled
         }
-        focus = nil
-        arrowFocusExit?(delta < 0 ? .previous : .next)
+        if vertical, delta < 0 {
+            focus = nil
+            arrowFocusExit?(.chromeLeading)
+        } else if !vertical, delta < 0, sidebarOpenForFocus {
+            focus = nil
+            arrowFocusExit?(.previous)
+        }
         return .handled
     }
 

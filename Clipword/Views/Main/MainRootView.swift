@@ -62,6 +62,7 @@ struct MainRootView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .environment(\.arrowFocusEnterToken, enterContentToken)
                     .environment(\.contentShouldTakeFocus, chromeFocus == nil)
+                    .environment(\.sidebarOpenForFocus, showSidebar)
                     .environment(\.arrowFocusExit) { direction in
                         handleContentExit(direction)
                     }
@@ -115,7 +116,11 @@ struct MainRootView: View {
                 .font(.headline)
                 .foregroundStyle(.secondary)
 
-            Spacer()
+            Color.clear
+                .frame(maxWidth: .infinity)
+                .frame(height: 22)
+                .contentShape(Rectangle())
+                .gesture(WindowDragGesture())
 
             Button {
                 appState.hideWindow()
@@ -133,10 +138,8 @@ struct MainRootView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .fixedSize(horizontal: false, vertical: true)
         .background(.background)
-        .gesture(
-            WindowDragGesture()
-        )
     }
 
     private var sidebar: some View {
@@ -187,7 +190,12 @@ struct MainRootView: View {
         if current == .sidebar {
             switch direction {
             case .up:
-                appState.cycleSection(-1)
+                let all = MainSection.allCases
+                if let index = all.firstIndex(of: appState.mainSection), index > 0 {
+                    appState.cycleSection(-1)
+                } else {
+                    chromeFocus = .sidebarToggle
+                }
                 return .handled
             case .down:
                 appState.cycleSection(1)
@@ -201,7 +209,7 @@ struct MainRootView: View {
             }
         }
 
-        // Toggle / close row
+        // Toggle: ↓ enters sidebar only if already open, else page. Never auto-opens sidebar.
         switch (current, direction) {
         case (.sidebarToggle, .right):
             chromeFocus = .close
@@ -220,15 +228,8 @@ struct MainRootView: View {
         case (.close, .left):
             chromeFocus = .sidebarToggle
             return .handled
-        case (.close, .right):
+        case (.close, .right), (.close, .down):
             enterContent()
-            return .handled
-        case (.close, .down):
-            if showSidebar {
-                chromeFocus = .sidebar
-            } else {
-                enterContent()
-            }
             return .handled
         case (.close, .up):
             return .handled
@@ -258,20 +259,23 @@ struct MainRootView: View {
     private func handleContentExit(_ direction: ArrowFocusExitDirection) {
         switch direction {
         case .previous:
-            if showSidebar {
-                chromeFocus = .sidebar
-            } else {
-                chromeFocus = .sidebarToggle
-            }
-        case .next:
+            // Only ← from page edge enters an already-open sidebar.
+            guard showSidebar else { return }
+            chromeFocus = .sidebar
+        case .chromeLeading:
             chromeFocus = .sidebarToggle
+        case .chromeTrailing:
+            chromeFocus = .close
+        case .next:
+            break
         }
     }
 
     private func toggleSidebar() {
         showSidebar.toggle()
         if showSidebar {
-            DispatchQueue.main.async { chromeFocus = .sidebar }
+            // Opened via button — stay on toggle; user enters sidebar with ↓ or later ← from page.
+            chromeFocus = .sidebarToggle
         } else if chromeFocus == .sidebar {
             chromeFocus = .sidebarToggle
         }

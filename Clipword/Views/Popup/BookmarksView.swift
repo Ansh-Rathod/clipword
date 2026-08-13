@@ -13,6 +13,7 @@ struct BookmarksView: View {
     @Environment(\.arrowFocusExit) private var arrowFocusExit
     @Environment(\.arrowFocusEnterToken) private var enterToken
     @Environment(\.contentShouldTakeFocus) private var contentShouldTakeFocus
+    @Environment(\.sidebarOpenForFocus) private var sidebarOpenForFocus
     @Default(.showSearchField) private var showSearchField
 
     @State private var searchQuery = ""
@@ -324,14 +325,17 @@ struct BookmarksView: View {
         case .listMove:
             return .handled
         case .exitPrevious:
-            searchFieldActive = false
-            focus = nil
-            arrowFocusExit?(.previous)
+            if direction == .up {
+                searchFieldActive = false
+                focus = nil
+                arrowFocusExit?(current == .typeFilter ? .chromeLeading : .chromeTrailing)
+            } else if direction == .left, sidebarOpenForFocus {
+                searchFieldActive = false
+                focus = nil
+                arrowFocusExit?(.previous)
+            }
             return .handled
         case .exitNext:
-            searchFieldActive = false
-            focus = nil
-            arrowFocusExit?(.next)
             return .handled
         }
     }
@@ -370,8 +374,17 @@ struct BookmarksView: View {
             editingItem = selectedItem
         case .remove:
             if let item = selectedItem { historyStore.deleteBookmark(item) }
-        case .typeFilter, .appFilter:
-            return .ignored
+        case .typeFilter:
+            KeyboardContextMenu.popCategoryFilter(current: activeCategory) { category in
+                activeCategory = category
+            }
+        case .appFilter:
+            KeyboardContextMenu.popAppFilter(
+                apps: availableApps,
+                current: activeAppBundleId
+            ) { bundleId in
+                activeAppBundleId = bundleId
+            }
         }
         return .handled
     }

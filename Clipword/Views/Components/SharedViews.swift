@@ -5,6 +5,10 @@ import SwiftUI
 
 enum ArrowFocusExitDirection {
     case previous, next
+    /// ↑ from content top-left → sidebar toggle
+    case chromeLeading
+    /// ↑ from content top (other columns) → close
+    case chromeTrailing
 }
 
 private struct ArrowFocusExitKey: EnvironmentKey {
@@ -17,6 +21,10 @@ private struct ArrowFocusEnterTokenKey: EnvironmentKey {
 
 private struct ContentShouldTakeFocusKey: EnvironmentKey {
     static let defaultValue = true
+}
+
+private struct SidebarOpenForFocusKey: EnvironmentKey {
+    static let defaultValue = false
 }
 
 extension EnvironmentValues {
@@ -35,6 +43,12 @@ extension EnvironmentValues {
     var contentShouldTakeFocus: Bool {
         get { self[ContentShouldTakeFocusKey.self] }
         set { self[ContentShouldTakeFocusKey.self] = newValue }
+    }
+
+    /// True when the sidebar is visible (← from page edge may focus it).
+    var sidebarOpenForFocus: Bool {
+        get { self[SidebarOpenForFocusKey.self] }
+        set { self[SidebarOpenForFocusKey.self] = newValue }
     }
 }
 
@@ -57,10 +71,9 @@ struct ArrowFocusRingModifier: ViewModifier {
 extension View {
     func arrowFocus<F: Hashable>(_ focus: FocusState<F?>.Binding, equals value: F) -> some View {
         self
-            .focusable(true, interactions: .activate)
+            .focusable()
             .focused(focus, equals: value)
             .modifier(ArrowFocusRingModifier())
-            .modifier(PointingHandOnHover())
     }
 
     /// Highlight ring without focusing an editable TextField (Return enters edit).
@@ -210,6 +223,38 @@ enum KeyboardContextMenu {
             separator()
             add("Edit…", "e", .command, edit)
             add("Remove Bookmark", "\u{08}", .command, remove)
+        })
+    }
+
+    static func popCategoryFilter(
+        current: ClipboardCategory?,
+        select: @escaping (ClipboardCategory?) -> Void
+    ) {
+        pop(buildMenu { add, separator in
+            add(current == nil ? "✓ All Types" : "All Types", "", [], { select(nil) })
+            separator()
+            for category in ClipboardCategory.allCases {
+                let title = category == current ? "✓ \(category.label)" : category.label
+                add(title, "", [], { select(category) })
+            }
+        })
+    }
+
+    static func popAppFilter(
+        apps: [AppFilterOption],
+        current: String?,
+        select: @escaping (String?) -> Void
+    ) {
+        pop(buildMenu { add, separator in
+            add(current == nil ? "✓ All Apps" : "All Apps", "", [], { select(nil) })
+            if !apps.isEmpty {
+                separator()
+                for app in apps {
+                    let label = "\(app.name) (\(app.count))"
+                    let title = app.bundleId == current ? "✓ \(label)" : label
+                    add(title, "", [], { select(app.bundleId) })
+                }
+            }
         })
     }
 
