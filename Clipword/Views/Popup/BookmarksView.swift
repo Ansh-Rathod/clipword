@@ -12,6 +12,7 @@ struct BookmarksView: View {
     @Environment(SearchService.self) private var searchService
     @Environment(\.arrowFocusExit) private var arrowFocusExit
     @Environment(\.arrowFocusEnterToken) private var enterToken
+    @Environment(\.arrowFocusEnterTarget) private var enterTarget
     @Environment(\.contentShouldTakeFocus) private var contentShouldTakeFocus
     @Environment(\.sidebarOpenForFocus) private var sidebarOpenForFocus
     @Default(.showSearchField) private var showSearchField
@@ -146,7 +147,7 @@ struct BookmarksView: View {
         }
         .onAppear { prepareContent(takeFocus: contentShouldTakeFocus) }
         .onChange(of: enterToken) { _, _ in
-            takeKeyboardFocus(preferList: true)
+            takeKeyboardFocus(target: enterTarget)
         }
         .onChange(of: contentShouldTakeFocus) { _, should in
             if !should {
@@ -284,21 +285,29 @@ struct BookmarksView: View {
             historyStore.selectedBookmarkID = filteredBookmarks.first?.id
         }
         if takeFocus {
-            takeKeyboardFocus(preferList: true)
+            takeKeyboardFocus(target: .listPreferred)
         } else {
             focus = nil
             searchFieldActive = false
         }
     }
 
-    private func takeKeyboardFocus(preferList: Bool) {
-        if preferList, !filteredBookmarks.isEmpty {
-            if historyStore.selectedBookmarkID == nil {
-                historyStore.selectedBookmarkID = filteredBookmarks.first?.id
+    private func takeKeyboardFocus(target: ArrowFocusEnterTarget) {
+        let toolbar = focusRows.first ?? [.typeFilter]
+        switch target {
+        case .listPreferred:
+            if !filteredBookmarks.isEmpty {
+                if historyStore.selectedBookmarkID == nil {
+                    historyStore.selectedBookmarkID = filteredBookmarks.first?.id
+                }
+                focus = .list
+            } else {
+                focus = toolbar.first
             }
-            focus = .list
-        } else {
-            focus = focusRows.first?.first
+        case .toolbarLeading:
+            focus = toolbar.first
+        case .toolbarTrailing:
+            focus = toolbar.last
         }
         searchFieldActive = false
     }

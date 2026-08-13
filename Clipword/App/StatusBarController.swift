@@ -46,7 +46,6 @@ final class StatusBarController: NSObject {
         menu.addItem(item("Clipboard", action: #selector(openClipboard), image: "doc.on.clipboard"))
         menu.addItem(item("Bookmarks", action: #selector(openBookmarks), image: "bookmark"))
         menu.addItem(item("Analytics", action: #selector(openAnalytics), image: "chart.bar"))
-
         menu.addItem(.separator())
 
         let settings = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")

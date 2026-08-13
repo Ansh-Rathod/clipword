@@ -43,6 +43,7 @@ struct MainRootView: View {
     @State private var showSidebar = false
     @FocusState private var chromeFocus: ChromeFocus?
     @State private var enterContentToken = 0
+    @State private var enterContentTarget: ArrowFocusEnterTarget = .listPreferred
 
     var body: some View {
         @Bindable var appState = appState
@@ -61,6 +62,7 @@ struct MainRootView: View {
                 detailView
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .environment(\.arrowFocusEnterToken, enterContentToken)
+                    .environment(\.arrowFocusEnterTarget, enterContentTarget)
                     .environment(\.contentShouldTakeFocus, chromeFocus == nil)
                     .environment(\.sidebarOpenForFocus, showSidebar)
                     .environment(\.arrowFocusExit) { direction in
@@ -186,50 +188,45 @@ struct MainRootView: View {
     private func handleChromeArrow(_ direction: SpatialDirection) -> KeyPress.Result {
         guard let current = chromeFocus else { return .ignored }
 
-        // Sidebar: up/down change section only; right/Return enter page; left → toggle
+        // Sidebar column: ↑↓ cycle sections; → chrome toggle; ← noop
         if current == .sidebar {
             switch direction {
             case .up:
                 let all = MainSection.allCases
                 if let index = all.firstIndex(of: appState.mainSection), index > 0 {
                     appState.cycleSection(-1)
-                } else {
-                    chromeFocus = .sidebarToggle
                 }
                 return .handled
             case .down:
                 appState.cycleSection(1)
                 return .handled
             case .right:
-                enterContent()
+                chromeFocus = .sidebarToggle
                 return .handled
             case .left:
-                chromeFocus = .sidebarToggle
                 return .handled
             }
         }
 
-        // Toggle: ↓ enters sidebar only if already open, else page. Never auto-opens sidebar.
         switch (current, direction) {
         case (.sidebarToggle, .right):
             chromeFocus = .close
             return .handled
         case (.sidebarToggle, .left):
+            if showSidebar { chromeFocus = .sidebar }
             return .handled
         case (.sidebarToggle, .down):
-            if showSidebar {
-                chromeFocus = .sidebar
-            } else {
-                enterContent()
-            }
+            enterContent(.toolbarLeading)
             return .handled
         case (.sidebarToggle, .up):
             return .handled
         case (.close, .left):
             chromeFocus = .sidebarToggle
             return .handled
-        case (.close, .right), (.close, .down):
-            enterContent()
+        case (.close, .right):
+            return .handled
+        case (.close, .down):
+            enterContent(.toolbarTrailing)
             return .handled
         case (.close, .up):
             return .handled
@@ -246,12 +243,13 @@ struct MainRootView: View {
         case .close:
             appState.hideWindow()
         case .sidebar:
-            enterContent()
+            enterContent(.listPreferred)
         }
         return .handled
     }
 
-    private func enterContent() {
+    private func enterContent(_ target: ArrowFocusEnterTarget = .listPreferred) {
+        enterContentTarget = target
         chromeFocus = nil
         enterContentToken += 1
     }
@@ -273,7 +271,7 @@ struct MainRootView: View {
     private func toggleSidebar() {
         showSidebar.toggle()
         if showSidebar {
-            // Opened via button — stay on toggle; user enters sidebar with ↓ or later ← from page.
+            // Opened via button — stay on toggle; ← enters sidebar when open.
             chromeFocus = .sidebarToggle
         } else if chromeFocus == .sidebar {
             chromeFocus = .sidebarToggle

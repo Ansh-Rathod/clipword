@@ -12,12 +12,25 @@ enum ArrowFocusExitDirection {
     case chromeTrailing
 }
 
+enum ArrowFocusEnterTarget {
+    /// Window open / Return from sidebar → list when available.
+    case listPreferred
+    /// ↓ from sidebar toggle → leftmost toolbar control.
+    case toolbarLeading
+    /// ↓ from close → rightmost toolbar control.
+    case toolbarTrailing
+}
+
 private struct ArrowFocusExitKey: EnvironmentKey {
     nonisolated(unsafe) static let defaultValue: ((ArrowFocusExitDirection) -> Void)? = nil
 }
 
 private struct ArrowFocusEnterTokenKey: EnvironmentKey {
     static let defaultValue: Int = 0
+}
+
+private struct ArrowFocusEnterTargetKey: EnvironmentKey {
+    static let defaultValue: ArrowFocusEnterTarget = .listPreferred
 }
 
 private struct ContentShouldTakeFocusKey: EnvironmentKey {
@@ -34,10 +47,16 @@ extension EnvironmentValues {
         set { self[ArrowFocusExitKey.self] = newValue }
     }
 
-    /// Incremented when chrome hands focus into content (focus first content stop).
+    /// Incremented when chrome hands focus into content.
     var arrowFocusEnterToken: Int {
         get { self[ArrowFocusEnterTokenKey.self] }
         set { self[ArrowFocusEnterTokenKey.self] = newValue }
+    }
+
+    /// Which content stop to highlight when `arrowFocusEnterToken` bumps.
+    var arrowFocusEnterTarget: ArrowFocusEnterTarget {
+        get { self[ArrowFocusEnterTargetKey.self] }
+        set { self[ArrowFocusEnterTargetKey.self] = newValue }
     }
 
     /// False while sidebar (or other chrome) holds keyboard focus.
