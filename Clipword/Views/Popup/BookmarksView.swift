@@ -259,7 +259,7 @@ struct BookmarksView: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
-        .arrowFocus($focus, equals: .list)
+        .arrowListFocus($focus, equals: .list)
         .onDeleteCommand {
             guard let item = selectedItem else { return }
             historyStore.deleteBookmark(item)
@@ -281,10 +281,8 @@ struct BookmarksView: View {
 
     private func prepareContent(takeFocus: Bool) {
         historyStore.reloadBookmarks()
-        if historyStore.selectedBookmarkID == nil {
-            historyStore.selectedBookmarkID = filteredBookmarks.first?.id
-        }
         if takeFocus {
+            historyStore.selectedBookmarkID = filteredBookmarks.first?.id
             takeKeyboardFocus(target: .listPreferred)
         } else {
             focus = nil
@@ -297,9 +295,7 @@ struct BookmarksView: View {
         switch target {
         case .listPreferred:
             if !filteredBookmarks.isEmpty {
-                if historyStore.selectedBookmarkID == nil {
-                    historyStore.selectedBookmarkID = filteredBookmarks.first?.id
-                }
+                historyStore.selectedBookmarkID = filteredBookmarks.first?.id
                 focus = .list
             } else {
                 focus = toolbar.first

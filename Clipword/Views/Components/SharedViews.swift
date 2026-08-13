@@ -76,15 +76,71 @@ struct ArrowFocusRingModifier: ViewModifier {
     @Environment(\.isFocused) private var isFocused
     var forced: Bool = false
 
+    private var active: Bool { isFocused || forced }
+
     func body(content: Content) -> some View {
         content
+            .background {
+                ArrowFocusAnchorProbe(active: active)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .allowsHitTesting(false)
+            }
             .overlay {
                 RoundedRectangle(cornerRadius: 6)
                     .strokeBorder(Color.accentColor, lineWidth: 2)
-                    .opacity((isFocused || forced) ? 1 : 0)
+                    .opacity(active ? 1 : 0)
                     .padding(-2)
             }
-            .animation(.easeInOut(duration: 0.1), value: isFocused || forced)
+            .animation(.easeInOut(duration: 0.1), value: active)
+    }
+}
+
+/// Tracks the NSView under the arrow-focused control so menus can pop beside it.
+@MainActor
+enum ArrowFocusMenuAnchor {
+    static var view: NSView?
+}
+
+private final class ArrowFocusAnchorNSView: NSView {
+    var active = false {
+        didSet { publish() }
+    }
+
+    override func layout() {
+        super.layout()
+        publish()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        publish()
+    }
+
+    private func publish() {
+        if active, window != nil, bounds.width > 0, bounds.height > 0 {
+            ArrowFocusMenuAnchor.view = self
+        } else if ArrowFocusMenuAnchor.view === self {
+            ArrowFocusMenuAnchor.view = nil
+        }
+    }
+}
+
+private struct ArrowFocusAnchorProbe: NSViewRepresentable {
+    var active: Bool
+
+    func makeNSView(context: Context) -> ArrowFocusAnchorNSView {
+        ArrowFocusAnchorNSView()
+    }
+
+    func updateNSView(_ nsView: ArrowFocusAnchorNSView, context: Context) {
+        nsView.active = active
+    }
+
+    static func dismantleNSView(_ nsView: ArrowFocusAnchorNSView, coordinator: ()) {
+        nsView.active = false
+        if ArrowFocusMenuAnchor.view === nsView {
+            ArrowFocusMenuAnchor.view = nil
+        }
     }
 }
 
@@ -94,6 +150,14 @@ extension View {
             .focusable()
             .focused(focus, equals: value)
             .modifier(ArrowFocusRingModifier())
+    }
+
+    /// Keyboard focus on a List without a ring around the whole list — row selection is the indicator.
+    func arrowListFocus<F: Hashable>(_ focus: FocusState<F?>.Binding, equals value: F) -> some View {
+        self
+            .focusable()
+            .focused(focus, equals: value)
+            .focusEffectDisabled()
     }
 
     /// Highlight ring without focusing an editable TextField (Return enters edit).
@@ -320,9 +384,18 @@ enum KeyboardContextMenu {
     }
 
     private static func pop(_ menu: NSMenu) {
-        guard let window = NSApp.keyWindow, let view = window.contentView else { return }
-        let point = NSPoint(x: 260, y: view.bounds.midY)
-        menu.popUp(positioning: nil, at: point, in: view)
+        if let anchor = ArrowFocusMenuAnchor.view, anchor.window != nil, !anchor.bounds.isEmpty {
+            let y = anchor.isFlipped ? anchor.bounds.maxY + 2 : anchor.bounds.minY - 2
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: y), in: anchor)
+            return
+        }
+
+        guard let contentView = NSApp.keyWindow?.contentView else { return }
+        menu.popUp(
+            positioning: nil,
+            at: NSPoint(x: 16, y: contentView.isFlipped ? 56 : contentView.bounds.maxY - 56),
+            in: contentView
+        )
     }
 }
 

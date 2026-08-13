@@ -221,7 +221,7 @@ struct ClipboardPopupView: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
-        .arrowFocus($focus, equals: .list)
+        .arrowListFocus($focus, equals: .list)
         .onDeleteCommand {
             guard let item = selectedItem else { return }
             historyStore.delete(item)
@@ -243,10 +243,8 @@ struct ClipboardPopupView: View {
 
     private func prepareContent(takeFocus: Bool) {
         historyStore.applyFilters(using: searchService)
-        if historyStore.selectedItemID == nil {
-            historyStore.selectedItemID = historyStore.displayedItems.first?.id
-        }
         if takeFocus {
+            historyStore.selectedItemID = historyStore.displayedItems.first?.id
             takeKeyboardFocus(target: .listPreferred)
         } else {
             focus = nil
@@ -259,9 +257,7 @@ struct ClipboardPopupView: View {
         switch target {
         case .listPreferred:
             if !historyStore.displayedItems.isEmpty {
-                if historyStore.selectedItemID == nil {
-                    historyStore.selectedItemID = historyStore.displayedItems.first?.id
-                }
+                historyStore.selectedItemID = historyStore.displayedItems.first?.id
                 focus = .list
             } else {
                 focus = toolbar.first

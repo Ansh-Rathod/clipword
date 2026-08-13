@@ -104,15 +104,6 @@ final class WindowManager {
 
             self.panel = panel
             self.hosting = hosting
-        } else if let hosting {
-            hosting.rootView = AnyView(
-                MainRootView()
-                    .environment(historyStore)
-                    .environment(analyticsEngine)
-                    .environment(appState)
-                    .environment(appState.searchService)
-                    .ignoresSafeArea()
-            )
         }
 
         guard let panel else { return }
@@ -120,8 +111,8 @@ final class WindowManager {
         positionNearStatusItem(panel)
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
-        panel.makeFirstResponder(panel.contentView)
         panel.orderFrontRegardless()
+        appState.windowPresentationToken += 1
 
         DispatchQueue.main.async { [weak panel] in
             guard let panel else { return }

@@ -48,6 +48,8 @@ final class AppState {
     var isCycling = false
     var isSearchFocused = false
     var searchFocusToken = 0
+    /// Bumped every time the main window is shown (reset sidebar / list selection).
+    var windowPresentationToken = 0
     private var pasteStackMonitor: Any?
 
     init(historyStore: HistoryStore, analyticsEngine: AnalyticsEngine) {

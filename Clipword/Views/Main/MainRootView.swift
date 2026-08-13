@@ -97,6 +97,23 @@ struct MainRootView: View {
                 .accessibilityHidden(true)
                 .allowsHitTesting(false)
         }
+        .onAppear { resetForWindowPresentation() }
+        .onChange(of: appState.windowPresentationToken) { _, _ in
+            resetForWindowPresentation()
+        }
+    }
+
+    private func resetForWindowPresentation() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            showSidebar = false
+        }
+        chromeFocus = nil
+        enterContentTarget = .listPreferred
+        DispatchQueue.main.async {
+            enterContentToken += 1
+        }
     }
 
     private var chromeBar: some View {
