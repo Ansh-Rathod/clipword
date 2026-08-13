@@ -11,6 +11,7 @@ private final class KeyablePanel: NSPanel {
 final class WindowManager {
     static let shared = WindowManager()
     static let windowSize = NSSize(width: 900, height: 600)
+    static let cornerRadius: CGFloat = 16
 
     private var panel: KeyablePanel?
     private var hosting: NSHostingView<AnyView>?
@@ -18,11 +19,23 @@ final class WindowManager {
     private weak var analyticsEngine: AnalyticsEngine?
     private weak var appState: AppState?
     private weak var statusButton: NSStatusBarButton?
+    private var resignObserver: NSObjectProtocol?
 
     func configure(historyStore: HistoryStore, analyticsEngine: AnalyticsEngine, appState: AppState) {
         self.historyStore = historyStore
         self.analyticsEngine = analyticsEngine
         self.appState = appState
+        if resignObserver == nil {
+            resignObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didResignActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.hideMainWindow()
+                }
+            }
+        }
     }
 
     func setStatusButton(_ button: NSStatusBarButton?) {
@@ -63,6 +76,10 @@ final class WindowManager {
             )
             let hosting = NSHostingView(rootView: root)
             hosting.frame = NSRect(origin: .zero, size: Self.windowSize)
+            hosting.wantsLayer = true
+            hosting.layer?.cornerRadius = Self.cornerRadius
+            hosting.layer?.cornerCurve = .continuous
+            hosting.layer?.masksToBounds = true
 
             let panel = KeyablePanel(
                 contentRect: hosting.frame,
@@ -73,11 +90,12 @@ final class WindowManager {
             panel.isFloatingPanel = true
             panel.level = .floating
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
-            panel.isMovableByWindowBackground = true
-            panel.backgroundColor = .windowBackgroundColor
-            panel.isOpaque = true
+            // false so buttons keep pointing-hand cursor / hit testing
+            panel.isMovableByWindowBackground = false
+            panel.backgroundColor = .clear
+            panel.isOpaque = false
             panel.hasShadow = true
-            panel.hidesOnDeactivate = false
+            panel.hidesOnDeactivate = true
             panel.isReleasedWhenClosed = false
             panel.becomesKeyOnlyIfNeeded = false
             panel.contentView = hosting
@@ -125,14 +143,18 @@ final class WindowManager {
         window.styleMask = [.borderless, .nonactivatingPanel, .fullSizeContentView]
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hidesOnDeactivate = true
+        window.isMovableByWindowBackground = false
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
-        if let closeButton = window.standardWindowButton(.closeButton),
-           let titleBarContainer = closeButton.superview?.superview {
-            titleBarContainer.isHidden = true
-            titleBarContainer.alphaValue = 0
-            titleBarContainer.frame.size.height = 0
+        if let content = window.contentView {
+            content.wantsLayer = true
+            content.layer?.cornerRadius = Self.cornerRadius
+            content.layer?.cornerCurve = .continuous
+            content.layer?.masksToBounds = true
         }
     }
 
@@ -178,7 +200,13 @@ private final class PanelDelegate: NSObject, NSWindowDelegate {
     weak var manager: WindowManager?
 
     func windowDidResignKey(_ notification: Notification) {
-        // Keep open when clicking into other apps; user closes via X / toggle.
+        guard let window = notification.object as? NSWindow else { return }
+        // Defer so sheets attached to this panel can become key first.
+        DispatchQueue.main.async { [weak self] in
+            if window.attachedSheet != nil { return }
+            if let key = NSApp.keyWindow, key.sheetParent === window { return }
+            self?.manager?.hideMainWindow()
+        }
     }
 
     func windowWillClose(_ notification: Notification) {

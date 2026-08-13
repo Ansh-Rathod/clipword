@@ -88,7 +88,8 @@ final class AppState {
     func cycleSection(_ delta: Int) {
         let all = MainSection.allCases
         guard let index = all.firstIndex(of: mainSection) else { return }
-        let next = (index + delta + all.count) % all.count
+        let next = index + delta
+        guard all.indices.contains(next) else { return }
         mainSection = all[next]
     }
 

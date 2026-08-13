@@ -57,14 +57,38 @@ struct ArrowFocusRingModifier: ViewModifier {
 extension View {
     func arrowFocus<F: Hashable>(_ focus: FocusState<F?>.Binding, equals value: F) -> some View {
         self
-            .focusable()
+            .focusable(true, interactions: .activate)
             .focused(focus, equals: value)
             .modifier(ArrowFocusRingModifier())
+            .modifier(PointingHandOnHover())
     }
 
     /// Highlight ring without focusing an editable TextField (Return enters edit).
     func arrowHighlight<F: Hashable>(_ focus: F?, equals value: F) -> some View {
         self.modifier(ArrowFocusRingModifier(forced: focus == value))
+    }
+
+    func pointingHandCursor() -> some View {
+        modifier(PointingHandOnHover())
+    }
+}
+
+private struct PointingHandOnHover: ViewModifier {
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { isHovering in
+                hovering = isHovering
+                if isHovering {
+                    NSCursor.pointingHand.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .onDisappear {
+                if hovering { NSCursor.pop() }
+            }
     }
 }
 

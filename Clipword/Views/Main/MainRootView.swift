@@ -70,7 +70,7 @@ struct MainRootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(.easeInOut(duration: 0.2), value: showSidebar)
         .background(.background)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .onKeyPress(.rightArrow) { handleChromeArrow(.right) }
         .onKeyPress(.leftArrow) { handleChromeArrow(.left) }
         .onKeyPress(.downArrow) { handleChromeArrow(.down) }
@@ -108,6 +108,7 @@ struct MainRootView: View {
             }
             .buttonStyle(.borderless)
             .arrowFocus($chromeFocus, equals: .sidebarToggle)
+            .pointingHandCursor()
             .help(showSidebar ? "Hide Sidebar" : "Show Sidebar")
 
             Text(appState.mainSection.title)
@@ -126,12 +127,16 @@ struct MainRootView: View {
             }
             .buttonStyle(.borderless)
             .arrowFocus($chromeFocus, equals: .close)
+            .pointingHandCursor()
             .keyboardShortcut("w", modifiers: .command)
             .help("Close (Esc)")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.background)
+        .gesture(
+            WindowDragGesture()
+        )
     }
 
     private var sidebar: some View {
