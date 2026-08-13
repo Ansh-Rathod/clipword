@@ -1,0 +1,11 @@
+bookmarking clipboard history entries (independent copies) ✓
+analytics for only words that were typed ✓
+typing time in analytics ✓
+clipboard history separate by date (timeline) ✓
+clipboard history tab: Type + App pulldowns (no second sidebar) ✓
+save / show copy timestamp ✓
+save / show paste timestamp ✓
+user can edit text content ✓
+analytics tab: single pane (menu picker, no nested sidebar) ✓
+extra analytics: unique words, reuse rate, avg time-to-paste, peak hours, typed vs copied
+bookmarks sidebar tab (same UI as clipboard; survives history delete) ✓

@@ -1,0 +1,466 @@
+import AppKit
+import Defaults
+import SwiftUI
+
+struct BookmarksView: View {
+    @Environment(AppState.self) private var appState
+    @Environment(HistoryStore.self) private var historyStore
+    @Environment(SearchService.self) private var searchService
+    @Environment(\.sidebarFocused) private var sidebarFocused
+    @Default(.showSearchField) private var showSearchField
+
+    @State private var searchQuery = ""
+    @State private var activeCategory: ClipboardCategory?
+    @State private var activeAppBundleId: String?
+    @State private var editingItem: BookmarkItem?
+    @State private var forceSearch = false
+    @FocusState private var field: ContentFocus?
+
+    private var selectedItem: BookmarkItem? {
+        guard let id = historyStore.selectedBookmarkID else { return nil }
+        return filteredBookmarks.first { $0.id == id }
+    }
+
+    private var availableApps: [AppFilterOption] {
+        var counts: [String: Int] = [:]
+        for item in historyStore.bookmarks {
+            let key = item.applicationBundleId ?? "unknown"
+            counts[key, default: 0] += 1
+        }
+        return counts.map { bundleId, count in
+            let name: String
+            if bundleId == "unknown" {
+                name = "Unknown"
+            } else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
+                name = FileManager.default.displayName(atPath: url.path)
+            } else {
+                name = bundleId
+            }
+            return AppFilterOption(bundleId: bundleId, name: name, count: count)
+        }
+        .sorted { $0.count > $1.count }
+    }
+
+    private var filteredBookmarks: [BookmarkItem] {
+        var result = historyStore.bookmarks
+        if let activeCategory {
+            result = result.filter { $0.category == activeCategory }
+        }
+        if let activeAppBundleId {
+            result = result.filter { $0.applicationBundleId == activeAppBundleId }
+        }
+        if !searchQuery.isEmpty {
+            result = searchService.searchBookmarks(query: searchQuery, in: result)
+        }
+        return result
+    }
+
+    private var groupedItems: [(String, [BookmarkItem])] {
+        let items = filteredBookmarks
+        let calendar = Calendar.current
+        let grouped = Dictionary(grouping: items) { item -> String in
+            timelineSection(for: item.bookmarkedAt, calendar: calendar)
+        }
+        let order = ["Today", "Yesterday", "This Week", "This Month", "Older"]
+        return order.compactMap { key in
+            guard let group = grouped[key], !group.isEmpty else { return nil }
+            return (key, group)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            toolbar
+            Divider()
+
+            if filteredBookmarks.isEmpty {
+                ContentUnavailableView(
+                    historyStore.bookmarks.isEmpty ? "No bookmarks" : "No bookmarks match this filter",
+                    systemImage: "bookmark",
+                    description: Text(historyStore.bookmarks.isEmpty
+                        ? "Bookmark clipboard entries to keep them here"
+                        : "Try a different filter or search term")
+                )
+                .frame(maxHeight: .infinity)
+            } else {
+                HStack(spacing: 0) {
+                    bookmarksList
+                        .frame(minWidth: 240, idealWidth: 280, maxWidth: 340)
+                    Divider()
+                    detailPane
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+        }
+        .background(.background)
+        .sheet(item: $editingItem) { item in
+            EditBookmarkSheet(item: item)
+        }
+        .background { bookmarkKeys }
+        .onKeyPress(.upArrow) {
+            guard !sidebarFocused else { return .ignored }
+            moveSelection(-1)
+            return .handled
+        }
+        .onKeyPress(.downArrow) {
+            guard !sidebarFocused else { return .ignored }
+            moveSelection(1)
+            return .handled
+        }
+        .onKeyPress(.return) {
+            guard !sidebarFocused else { return .ignored }
+            if field == .list || field == .search, let item = selectedItem {
+                let paste = NSEvent.modifierFlags.contains(.option)
+                let strip = NSEvent.modifierFlags.contains(.shift)
+                historyStore.selectBookmark(item, paste: paste, withoutFormatting: strip)
+                appState.hideWindow()
+                return .handled
+            }
+            return .ignored
+        }
+        .onKeyPress(.escape) {
+            if field == .search {
+                if !searchQuery.isEmpty {
+                    searchQuery = ""
+                    return .handled
+                }
+                field = .list
+                return .handled
+            }
+            return .ignored
+        }
+        .onKeyPress(keys: ["c"]) { press in
+            guard press.modifiers.contains(.command), field != .search, let item = selectedItem else { return .ignored }
+            historyStore.selectBookmark(item, paste: false)
+            return .handled
+        }
+        .onAppear {
+            historyStore.reloadBookmarks()
+            if historyStore.selectedBookmarkID == nil {
+                historyStore.selectedBookmarkID = filteredBookmarks.first?.id
+            }
+            field = .list
+        }
+        .onChange(of: appState.searchFocusToken) { _, _ in
+            forceSearch = true
+            DispatchQueue.main.async { field = .search }
+        }
+        .onChange(of: field) { _, newValue in
+            appState.isSearchFocused = newValue == .search
+        }
+        .onDisappear { appState.isSearchFocused = false }
+    }
+
+    private var toolbar: some View {
+        HStack(spacing: 12) {
+            Picker("Type", selection: $activeCategory) {
+                Text("All Types").tag(ClipboardCategory?.none)
+                ForEach(ClipboardCategory.allCases) { category in
+                    Text(category.label).tag(Optional(category))
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .frame(maxWidth: 140)
+
+            Picker("App", selection: $activeAppBundleId) {
+                Text("All Apps").tag(String?.none)
+                ForEach(availableApps) { app in
+                    Text("\(app.name) (\(app.count))").tag(Optional(app.bundleId))
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .frame(maxWidth: 160)
+
+            if showSearchField || forceSearch || !searchQuery.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Search", text: $searchQuery)
+                        .textFieldStyle(.plain)
+                        .focused($field, equals: .search)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private var bookmarksList: some View {
+        List(selection: Bindable(historyStore).selectedBookmarkID) {
+            ForEach(groupedItems, id: \.0) { section, items in
+                Section {
+                    ForEach(items) { item in
+                        BookmarkRowView(item: item)
+                            .tag(item.id)
+                            .contentShape(Rectangle())
+                            .onTapGesture(count: 2) {
+                                historyStore.selectBookmark(item, paste: NSEvent.modifierFlags.contains(.option))
+                                appState.hideWindow()
+                            }
+                            .contextMenu {
+                                Button("Copy") { historyStore.selectBookmark(item, paste: false) }
+                                Button("Paste") {
+                                    historyStore.selectBookmark(item, paste: true)
+                                    appState.hideWindow()
+                                }
+                                Divider()
+                                Button("Edit…") { editingItem = item }
+                                Button("Remove Bookmark", role: .destructive) {
+                                    historyStore.deleteBookmark(item)
+                                }
+                            }
+                    }
+                } header: {
+                    Text(section)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .textCase(nil)
+                }
+            }
+        }
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .focused($field, equals: .list)
+        .onDeleteCommand {
+            guard let item = selectedItem else { return }
+            historyStore.deleteBookmark(item)
+        }
+    }
+
+    private var bookmarkKeys: some View {
+        Group {
+            Button("Paste") {
+                guard let item = selectedItem else { return }
+                historyStore.selectBookmark(item, paste: true)
+                appState.hideWindow()
+            }
+            .keyboardShortcut(.return, modifiers: .command)
+            Button("Edit…") { editingItem = selectedItem }
+                .keyboardShortcut("e", modifiers: .command)
+                .disabled(selectedItem == nil)
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private var detailPane: some View {
+        if let item = selectedItem {
+            BookmarkDetailPane(item: item) {
+                editingItem = item
+            }
+        } else {
+            ContentUnavailableView("Select a bookmark", systemImage: "bookmark")
+        }
+    }
+
+    private func moveSelection(_ delta: Int) {
+        let items = filteredBookmarks
+        guard !items.isEmpty else { return }
+        guard let currentID = historyStore.selectedBookmarkID,
+              let index = items.firstIndex(where: { $0.id == currentID }) else {
+            historyStore.selectedBookmarkID = items.first?.id
+            return
+        }
+        let newIndex = max(0, min(items.count - 1, index + delta))
+        historyStore.selectedBookmarkID = items[newIndex].id
+    }
+
+    private func timelineSection(for date: Date, calendar: Calendar) -> String {
+        if calendar.isDateInToday(date) { return "Today" }
+        if calendar.isDateInYesterday(date) { return "Yesterday" }
+        if let weekAgo = calendar.date(byAdding: .day, value: -7, to: .now),
+           date >= weekAgo { return "This Week" }
+        if let monthAgo = calendar.date(byAdding: .day, value: -30, to: .now),
+           date >= monthAgo { return "This Month" }
+        return "Older"
+    }
+}
+
+struct BookmarkRowView: View {
+    let item: BookmarkItem
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: rowIcon)
+                .font(.body)
+                .foregroundStyle(.primary)
+                .frame(width: 18)
+
+            Text(item.displayTitle)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: 0)
+
+            Image(systemName: "bookmark.fill")
+                .font(.caption2)
+                .foregroundStyle(.blue)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var rowIcon: String {
+        if item.contentType == .image { return "photo" }
+        if item.contentType == .file { return "doc" }
+        return item.category.systemImage
+    }
+}
+
+struct BookmarkDetailPane: View {
+    @Environment(HistoryStore.self) private var historyStore
+    let item: BookmarkItem
+    var onEdit: () -> Void = {}
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                contentPreview
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(20)
+            }
+            .frame(maxHeight: .infinity)
+
+            Divider()
+
+            informationSection
+                .padding(20)
+        }
+    }
+
+    @ViewBuilder
+    private var contentPreview: some View {
+        if item.contentType == .image, let data = item.imageData, let image = NSImage(data: data) {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: 480)
+        } else if let text = item.plainText {
+            Text(text)
+                .font(.body.monospaced())
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            Text(item.displayTitle)
+                .font(.body.monospaced())
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var informationSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Information")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            infoRow("Source") {
+                HStack(spacing: 6) {
+                    AppIconView(bundleId: item.applicationBundleId, size: 14)
+                    Text(appName(for: item.applicationBundleId))
+                }
+            }
+            infoRow("Content type") {
+                Text(contentTypeLabel)
+            }
+            infoRow("Characters") {
+                Text("\(item.charCount)")
+            }
+            infoRow("Words") {
+                Text("\(item.wordCount)")
+            }
+            infoRow("Bookmarked") {
+                Text(dateLabel(for: item.bookmarkedAt))
+            }
+            infoRow("Copied") {
+                Text(dateLabel(for: item.sourceCopiedAt))
+            }
+
+            HStack(spacing: 12) {
+                Button("Edit…", action: onEdit)
+                Button("Remove Bookmark", role: .destructive) {
+                    historyStore.deleteBookmark(item)
+                }
+                Spacer()
+            }
+            .buttonStyle(.borderless)
+            .padding(.top, 4)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func infoRow<Content: View>(_ label: String, @ViewBuilder value: () -> Content) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label)
+                .foregroundStyle(.secondary)
+                .frame(width: 110, alignment: .leading)
+            value()
+            Spacer(minLength: 0)
+        }
+        .font(.body)
+    }
+
+    private var contentTypeLabel: String {
+        switch item.contentType {
+        case .text: return item.category == .styledText ? "Text (Formatted)" : "Text"
+        case .rtf: return "Text (Formatted)"
+        case .html: return "HTML"
+        case .image: return "Image"
+        case .file: return "File"
+        }
+    }
+
+    private func dateLabel(for date: Date) -> String {
+        let calendar = Calendar.current
+        let time = date.formatted(date: .omitted, time: .standard)
+        if calendar.isDateInToday(date) { return "Today at \(time)" }
+        if calendar.isDateInYesterday(date) { return "Yesterday at \(time)" }
+        return date.formatted(date: .abbreviated, time: .standard)
+    }
+
+    private func appName(for bundleId: String?) -> String {
+        guard let bundleId, bundleId != "unknown" else { return "Unknown" }
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
+            return FileManager.default.displayName(atPath: url.path)
+        }
+        return bundleId
+    }
+}
+
+struct EditBookmarkSheet: View {
+    @Environment(HistoryStore.self) private var historyStore
+    @Environment(\.dismiss) private var dismiss
+    let item: BookmarkItem
+    @State private var draft: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Edit Bookmark")
+                .font(.headline)
+            TextEditor(text: $draft)
+                .font(.body.monospaced())
+                .frame(minWidth: 420, minHeight: 220)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") {
+                    historyStore.updateBookmarkContent(item, content: draft)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding()
+        .onAppear { draft = item.plainText ?? "" }
+    }
+}
