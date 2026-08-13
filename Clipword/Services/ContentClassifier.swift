@@ -69,12 +69,21 @@ enum ContentClassifier {
         }
     }
 
+    /// Classification only needs a bounded head — scanning/allocating over a
+    /// multi-MB pasteboard would freeze the main thread at copy time.
+    private static let classifyTextLimit = 20_000
+
+    private static func classifyHead(_ text: String?) -> String? {
+        guard let text else { return nil }
+        return String(text.prefix(classifyTextLimit))
+    }
+
     private static func hasLinkType(_ types: [String]) -> Bool {
         types.contains { $0 == "public.url" || ($0.contains("url") && $0.contains("public")) }
     }
 
     private static func isLinkText(_ text: String?) -> Bool {
-        guard let text else { return false }
+        guard let text = classifyHead(text) else { return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
 
@@ -98,7 +107,7 @@ enum ContentClassifier {
     }
 
     private static func isColorText(_ text: String?) -> Bool {
-        guard let text else { return false }
+        guard let text = classifyHead(text) else { return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let patterns = [
             "^#[0-9A-Fa-f]{3,8}$",
@@ -117,7 +126,7 @@ enum ContentClassifier {
             return true
         }
 
-        guard let text, !text.isEmpty else { return false }
+        guard let text = classifyHead(text), !text.isEmpty else { return false }
         var score = 0
         if text.contains("{") && text.contains("}") { score += 1 }
         if text.contains(";") { score += 1 }

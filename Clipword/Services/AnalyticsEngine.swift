@@ -13,6 +13,11 @@ final class AnalyticsEngine {
         self.modelContext = modelContext
     }
 
+    /// Tokenization is bounded to a head and word upserts are batched into one
+    /// fetch + one save: tokenizing and saving per-token over a multi-MB paste
+    /// froze the main thread for minutes (one Core Data transaction per word).
+    private static let analyticsTokenLimit = 20_000
+
     func recordCopy(item: HistoryItem) {
         upsertDailyStats { stats in
             stats.copiesCount += 1
@@ -26,14 +31,34 @@ final class AnalyticsEngine {
             return
         }
 
+        let head = text.count > Self.analyticsTokenLimit ? String(text.prefix(Self.analyticsTokenLimit)) : text
         let tokens = TextAnalytics.tokens(
-            from: text,
+            from: head,
             minLength: Defaults[.analyticsMinWordLength],
             excludeStopWords: Defaults[.analyticsStopWords]
         )
+        var counts: [String: Int] = [:]
         for token in tokens {
-            upsertWord(token, source: .clipboard)
+            counts[token, default: 0] += 1
         }
+
+        let sourceRaw = WordSource.clipboard.rawValue
+        var descriptor = FetchDescriptor<WordFrequency>(
+            predicate: #Predicate { $0.sourceRaw == sourceRaw }
+        )
+        let existing = (try? modelContext.fetch(descriptor)) ?? []
+        var byWord: [String: WordFrequency] = [:]
+        for word in existing { byWord[word.word] = word }
+
+        for (word, increment) in counts {
+            if let wordFrequency = byWord[word] {
+                wordFrequency.count += increment
+                wordFrequency.lastSeenAt = .now
+            } else {
+                modelContext.insert(WordFrequency(word: word, count: increment, source: .clipboard))
+            }
+        }
+        try? modelContext.save()
     }
 
     func recordPaste(item: HistoryItem) {

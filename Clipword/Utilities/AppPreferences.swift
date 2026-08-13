@@ -121,4 +121,7 @@ extension Defaults.Keys {
     static let analyticsStopWords = Key<Bool>("analyticsStopWords", default: true)
     static let analyticsMinWordLength = Key<Int>("analyticsMinWordLength", default: 3)
     static let timeRangePreset = Key<String>("timeRangePreset", default: TimeRangePreset.week.rawValue)
+    /// Legacy category migration ran at least once on this install (persisted so
+    /// launch never re-decodes every item's blob).
+    static let didBackfillCategories = Key<Bool>("didBackfillCategories", default: false)
 }

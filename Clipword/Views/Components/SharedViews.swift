@@ -327,14 +327,71 @@ struct StatCardView: View {
     }
 }
 
-/// Caps preview text so gigantic clipboard payloads don't stall Text layout.
-struct TextPreview {
-    static let limit = 20_000
+/// Read-only, selectable, monospaced text preview backed by NSTextView (TextKit 2).
+/// SwiftUI `Text` lays out the entire string before first paint, which freezes on
+/// multi-MB clipboard payloads. TextKit 2's NSTextLayoutManager lays out only the
+/// viewport, so huge documents render and scroll smoothly. Never becomes first
+/// responder so it can't trap the app's arrow-key navigation.
+struct ReadOnlyTextView: NSViewRepresentable {
+    let text: String
 
-    static func truncated(_ text: String) -> (text: String, isTruncated: Bool) {
-        guard text.count > limit else { return (text, false) }
-        return (String(text.prefix(limit)) + "…", true)
+    func makeNSView(context: Context) -> NSScrollView {
+        // Explicit TextKit 2: viewport-based layout for large documents. Avoid
+        // touching `layoutManager`/`textContainer`, which would flip it back to
+        // TextKit 1 (full-document layout on every string set).
+        let textView = NSTextView(usingTextLayoutManager: true)
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.allowsUndo = false
+        textView.usesFontPanel = false
+        textView.usesRuler = false
+        textView.usesFindBar = false
+        textView.isContinuousSpellCheckingEnabled = false
+        textView.isGrammarCheckingEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isAutomaticLinkDetectionEnabled = false
+        textView.isAutomaticTextCompletionEnabled = false
+        textView.usesAdaptiveColorMappingForDarkAppearance = true
+        textView.drawsBackground = false
+        textView.textColor = .labelColor
+        textView.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        textView.textContainerInset = NSSize(width: 20, height: 20)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.string = text
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
+
+        let scrollView = NSScrollView()
+        scrollView.documentView = textView
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+        return scrollView
     }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        // Only replace when the item actually changed — avoids relayout churn on
+        // every SwiftUI body evaluation.
+        if textView.string != text {
+            textView.string = text
+            textView.setSelectedRange(NSRange(location: 0, length: 0))
+            textView.scrollToBeginningOfDocument(nil)
+        }
+    }
+}
+
+/// NSTextView that stays out of the keyboard focus chain: the app navigates with
+/// arrow keys via SwiftUI, and a first-responder text view would swallow them.
+private final class PreviewTextView: NSTextView {
+    override var acceptsFirstResponder: Bool { false }
 }
 
 struct AppIconView: View {

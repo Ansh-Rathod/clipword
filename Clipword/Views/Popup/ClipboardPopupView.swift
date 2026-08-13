@@ -418,12 +418,8 @@ struct ClipboardDetailPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                contentPreview
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(20)
-            }
-            .frame(maxHeight: .infinity)
+            contentPreview
+                .frame(maxHeight: .infinity)
 
             Divider()
 
@@ -435,26 +431,24 @@ struct ClipboardDetailPane: View {
     @ViewBuilder
     private var contentPreview: some View {
         if item.contentType == .image, let data = item.imageData, let image = NSImage(data: data) {
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFit()
-                .frame(maxWidth: 480)
-        } else if let text = item.plainText {
-            let preview = TextPreview.truncated(text)
-            Text(preview.text)
-                .font(.body.monospaced())
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            if preview.isTruncated {
-                Text("Showing first \(TextPreview.limit) characters")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 6)
+            ScrollView {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: 480)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(20)
             }
+        } else if let text = item.plainText, !text.isEmpty {
+            ReadOnlyTextView(text: text)
         } else {
-            Text(item.displayTitle)
-                .font(.body.monospaced())
-                .foregroundStyle(.secondary)
+            ScrollView {
+                Text(item.displayTitle)
+                    .font(.body.monospaced())
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(20)
+            }
         }
     }
 

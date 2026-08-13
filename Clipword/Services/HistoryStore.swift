@@ -15,7 +15,11 @@ final class HistoryStore {
     var activeAppBundleId: String?
 
     private var analyticsEngine: AnalyticsEngine?
-    private var didBackfillCategories = false
+
+    /// Legacy categories are backfilled once per install, off the launch path, and
+    /// only for bounded payloads — decoding/classifying a multi-MB blob on the
+    /// main thread at launch froze the app (hotkey never even registered).
+    private static let categoryBackfillMaxBytes = 512 * 1024
 
     init(modelContext: ModelContext) {
         self.modelContext = modelContext
@@ -32,14 +36,22 @@ final class HistoryStore {
         var descriptor = FetchDescriptor<HistoryItem>(sortBy: [sort])
         descriptor.fetchLimit = Defaults[.historySize] + 50
         items = (try? modelContext.fetch(descriptor)) ?? []
-        backfillCategoriesIfNeeded()
+        scheduleCategoryBackfill()
         applyFilters()
     }
 
+    private func scheduleCategoryBackfill() {
+        guard !Defaults[.didBackfillCategories] else { return }
+        Task { @MainActor [weak self] in
+            self?.backfillCategoriesIfNeeded()
+        }
+    }
+
     private func backfillCategoriesIfNeeded() {
-        guard !didBackfillCategories else { return }
+        guard !Defaults[.didBackfillCategories] else { return }
         var changed = false
         for item in items {
+            guard item.contentData.count <= Self.categoryBackfillMaxBytes else { continue }
             guard let snapshot = PasteboardSnapshot.decode(from: item.contentData) else { continue }
             let classified = ContentClassifier.classify(
                 snapshot: snapshot,
@@ -52,7 +64,7 @@ final class HistoryStore {
             }
         }
         if changed { try? modelContext.save() }
-        didBackfillCategories = true
+        Defaults[.didBackfillCategories] = true
     }
 
     private func sortDescriptor() -> SortDescriptor<HistoryItem> {
@@ -174,7 +186,7 @@ final class HistoryStore {
             charCount: metrics?.charCount ?? 0,
             readingTimeSeconds: metrics?.readingTimeSeconds ?? 0,
             imageData: snapshot.imageData,
-            title: snapshot.plainText?.components(separatedBy: .newlines).first
+            title: snapshot.plainText.map(boundedTitle)
         )
         modelContext.insert(item)
         try? modelContext.save()
@@ -200,6 +212,16 @@ final class HistoryStore {
         }
 
         return item
+    }
+
+    /// First line of text, capped so huge payloads can't produce giant titles
+    /// (a huge title would stall Text layout in the list).
+    private func boundedTitle(_ text: String) -> String {
+        let head = text.prefix(200)
+        if let newline = head.firstIndex(where: { $0 == "\n" || $0 == "\r" }) {
+            return String(head[..<newline])
+        }
+        return String(head)
     }
 
     private func findDuplicate(snapshot: PasteboardSnapshot) -> HistoryItem? {
@@ -245,7 +267,7 @@ final class HistoryStore {
             item.contentData = snapshot.encode() ?? item.contentData
         }
         item.plainText = content
-        item.title = content.components(separatedBy: .newlines).first
+        item.title = boundedTitle(content)
         item.category = ContentClassifier.classify(item: item)
         let metrics = TextAnalytics.metrics(for: content)
         item.wordCount = metrics.wordCount
@@ -337,7 +359,7 @@ final class HistoryStore {
             item.contentData = snapshot.encode() ?? item.contentData
         }
         item.plainText = content
-        item.title = content.components(separatedBy: .newlines).first
+        item.title = boundedTitle(content)
         let metrics = TextAnalytics.metrics(for: content)
         item.wordCount = metrics.wordCount
         item.lineCount = metrics.lineCount

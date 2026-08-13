@@ -16,11 +16,17 @@ enum TextAnalytics {
         let readingTimeSeconds: Int
     }
 
+    /// Word/line counting allocates arrays over the whole string; bound it to a
+    /// head so multi-MB payloads don't stall the main thread at copy time.
+    /// Char count stays exact (O(n) without allocations).
+    private static let analysisLimit = 50_000
+
     static func metrics(for text: String) -> Metrics {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let chars = text.count
+        let head = text.count > analysisLimit ? String(text.prefix(analysisLimit)) : text
+        let trimmed = head.trimmingCharacters(in: .whitespacesAndNewlines)
         let words = wordCount(in: trimmed)
         let lines = max(1, trimmed.components(separatedBy: .newlines).filter { !$0.isEmpty }.count)
-        let chars = trimmed.count
         let readingTime = max(1, Int(ceil(Double(words) / 200.0 * 60.0)))
         return Metrics(wordCount: words, lineCount: lines, charCount: chars, readingTimeSeconds: readingTime)
     }
