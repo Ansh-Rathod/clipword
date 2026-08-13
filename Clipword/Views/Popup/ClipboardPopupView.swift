@@ -95,7 +95,11 @@ struct ClipboardPopupView: View {
                 focus = .search
                 return .handled
             }
-            return .ignored
+            // Esc from any highlighted control → back to the sidebar.
+            guard focus != nil else { return .ignored }
+            searchFieldActive = false
+            arrowFocusExit?(.previous)
+            return .handled
         }
         .onKeyPress(keys: ["k"]) { press in
             guard press.modifiers.contains(.command), let item = selectedItem else { return .ignored }
@@ -289,11 +293,9 @@ struct ClipboardPopupView: View {
         case .exitPrevious:
             if direction == .up {
                 searchFieldActive = false
-                focus = nil
                 arrowFocusExit?(current == .typeFilter ? .chromeLeading : .chromeTrailing)
             } else if direction == .left, sidebarOpenForFocus {
                 searchFieldActive = false
-                focus = nil
                 arrowFocusExit?(.previous)
             }
             return .handled
@@ -438,10 +440,17 @@ struct ClipboardDetailPane: View {
                 .scaledToFit()
                 .frame(maxWidth: 480)
         } else if let text = item.plainText {
-            Text(text)
+            let preview = TextPreview.truncated(text)
+            Text(preview.text)
                 .font(.body.monospaced())
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if preview.isTruncated {
+                Text("Showing first \(TextPreview.limit) characters")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 6)
+            }
         } else {
             Text(item.displayTitle)
                 .font(.body.monospaced())

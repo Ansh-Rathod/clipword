@@ -4,6 +4,7 @@ import SwiftUI
 // MARK: - Arrow focus (web-style tabbing via arrows)
 
 enum ArrowFocusExitDirection {
+    /// Esc (or ← at page left edge) → sidebar; falls back to the sidebar toggle when hidden.
     case previous, next
     /// ↑ from content top-left → sidebar toggle
     case chromeLeading
@@ -258,6 +259,21 @@ enum KeyboardContextMenu {
         })
     }
 
+    /// Pop a menu of choices with a checkmark on the current one (arrow-key navigable).
+    static func popChoices<T: Hashable>(
+        title: (T) -> String,
+        current: T?,
+        choices: [T],
+        select: @escaping (T) -> Void
+    ) {
+        pop(buildMenu { add, _ in
+            for choice in choices {
+                let label = title(choice)
+                add(current == choice ? "✓ \(label)" : label, "", [], { select(choice) })
+            }
+        })
+    }
+
     private static func buildMenu(
         _ build: (
             _ add: (String, String, NSEvent.ModifierFlags, @escaping () -> Void) -> Void,
@@ -311,26 +327,13 @@ struct StatCardView: View {
     }
 }
 
-struct TimeRangePickerView: View {
-    @Binding var preset: TimeRangePreset
-    @Binding var customStart: Date
-    @Binding var customEnd: Date
+/// Caps preview text so gigantic clipboard payloads don't stall Text layout.
+struct TextPreview {
+    static let limit = 20_000
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Picker("Range", selection: $preset) {
-                ForEach(TimeRangePreset.allCases) { range in
-                    Text(range.label).tag(range)
-                }
-            }
-            .pickerStyle(.segmented)
-            .help("Time range")
-
-            if preset == .custom {
-                DatePicker("Start", selection: $customStart, displayedComponents: .date)
-                DatePicker("End", selection: $customEnd, displayedComponents: .date)
-            }
-        }
+    static func truncated(_ text: String) -> (text: String, isTruncated: Bool) {
+        guard text.count > limit else { return (text, false) }
+        return (String(text.prefix(limit)) + "…", true)
     }
 }
 

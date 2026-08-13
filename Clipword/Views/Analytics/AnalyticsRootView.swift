@@ -33,34 +33,63 @@ struct AnalyticsRootView: View {
     @FocusState private var focus: AnalyticsFocus?
 
     private enum AnalyticsFocus: Hashable {
-        case section, range
+        case section, range, customStart, customEnd
     }
 
-    private let order: [AnalyticsFocus] = [.section, .range]
+    private var order: [AnalyticsFocus] {
+        var items: [AnalyticsFocus] = [.section, .range]
+        if preset == .custom {
+            items.append(contentsOf: [.customStart, .customEnd])
+        }
+        return items
+    }
 
     private var interval: DateInterval? {
         preset.interval(customStart: customStart, customEnd: customEnd)
     }
 
+    private var toolbar: some View {
+        HStack {
+            Picker("Section", selection: $section) {
+                ForEach(AnalyticsSection.allCases) { item in
+                    Text(item.title).tag(item)
+                }
+            }
+            .pickerStyle(.menu)
+            .frame(maxWidth: 200)
+            .arrowFocus($focus, equals: .section)
+
+            Spacer()
+
+            rangePicker
+        }
+        .padding(.horizontal)
+    }
+
+    private var rangePicker: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Picker("Range", selection: $preset) {
+                ForEach(TimeRangePreset.allCases) { range in
+                    Text(range.label).tag(range)
+                }
+            }
+            .pickerStyle(.segmented)
+            .help("Time range")
+
+            if preset == .custom {
+                DatePicker("Start", selection: $customStart, displayedComponents: .date)
+                    .arrowFocus($focus, equals: .customStart)
+                DatePicker("End", selection: $customEnd, displayedComponents: .date)
+                    .arrowFocus($focus, equals: .customEnd)
+            }
+        }
+        .frame(maxWidth: 420)
+        .arrowFocus($focus, equals: .range)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Picker("Section", selection: $section) {
-                    ForEach(AnalyticsSection.allCases) { item in
-                        Text(item.title).tag(item)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: 200)
-                .arrowFocus($focus, equals: .section)
-
-                Spacer()
-
-                TimeRangePickerView(preset: $preset, customStart: $customStart, customEnd: $customEnd)
-                    .frame(maxWidth: 420)
-                    .arrowFocus($focus, equals: .range)
-            }
-            .padding(.horizontal)
+            toolbar
 
             Group {
                 switch section {
@@ -92,6 +121,34 @@ struct AnalyticsRootView: View {
         .onKeyPress(.leftArrow) { move(-1, vertical: false) }
         .onKeyPress(.downArrow) { move(1, vertical: true) }
         .onKeyPress(.upArrow) { move(-1, vertical: true) }
+        .onKeyPress(.return) { activate() }
+        .onKeyPress(.space) { activate() }
+        .onKeyPress(.escape) {
+            guard focus != nil else { return .ignored }
+            arrowFocusExit?(.previous)
+            return .handled
+        }
+    }
+
+    private func activate() -> KeyPress.Result {
+        guard let focus else { return .ignored }
+        switch focus {
+        case .section:
+            KeyboardContextMenu.popChoices(
+                title: { $0.title },
+                current: section,
+                choices: AnalyticsSection.allCases
+            ) { section = $0 }
+        case .range:
+            KeyboardContextMenu.popChoices(
+                title: { $0.label },
+                current: preset,
+                choices: TimeRangePreset.allCases
+            ) { preset = $0 }
+        case .customStart, .customEnd:
+            return .ignored
+        }
+        return .handled
     }
 
     private func move(_ delta: Int, vertical: Bool) -> KeyPress.Result {
@@ -102,10 +159,8 @@ struct AnalyticsRootView: View {
             return .handled
         }
         if vertical, delta < 0 {
-            focus = nil
             arrowFocusExit?(current == .section ? .chromeLeading : .chromeTrailing)
         } else if !vertical, delta < 0, sidebarOpenForFocus {
-            focus = nil
             arrowFocusExit?(.previous)
         }
         return .handled

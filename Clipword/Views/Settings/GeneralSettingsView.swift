@@ -62,9 +62,10 @@ struct GeneralSettingsView: View {
                 shortcutRow("↑ ↓", "Move between rows / list items")
                 shortcutRow("←", "To sidebar (only at page left edge, sidebar open)")
                 shortcutRow("→ / Return", "Enter page from sidebar")
-                shortcutRow("Return", "Activate · edit text field · paste from list")
+                shortcutRow("Return", "Activate · open picker · step up · edit text · paste from list")
+                shortcutRow("Space", "Step down (on steppers)")
                 shortcutRow("⌘K", "Item actions menu")
-                shortcutRow("Esc", "Leave text field / close")
+                shortcutRow("Esc", "Leave text field / to sidebar / close")
             }
             Section("Search") {
                 Picker("Search mode", selection: $searchMode) {
@@ -90,8 +91,9 @@ struct GeneralSettingsView: View {
         .onKeyPress(.leftArrow) { move(-1, vertical: false) }
         .onKeyPress(.downArrow) { move(1, vertical: true) }
         .onKeyPress(.upArrow) { move(-1, vertical: true) }
-        .onKeyPress(.return) { toggleIfNeeded() }
-        .onKeyPress(.space) { toggleIfNeeded() }
+        .onKeyPress(.return) { activate() }
+        .onKeyPress(.space) { activate() }
+        .onKeyPress(.escape) { exitToSidebar() }
     }
 
     private func move(_ delta: Int, vertical: Bool) -> KeyPress.Result {
@@ -102,20 +104,31 @@ struct GeneralSettingsView: View {
             return .handled
         }
         if vertical, delta < 0 {
-            focus = nil
             arrowFocusExit?(.chromeLeading)
         } else if !vertical, delta < 0, sidebarOpenForFocus {
-            focus = nil
             arrowFocusExit?(.previous)
         }
         return .handled
     }
 
-    private func toggleIfNeeded() -> KeyPress.Result {
+    private func exitToSidebar() -> KeyPress.Result {
+        guard focus != nil else { return .ignored }
+        arrowFocusExit?(.previous)
+        return .handled
+    }
+
+    private func activate() -> KeyPress.Result {
         switch focus {
         case .launchAtLogin:
             launchAtLogin.toggle()
             LaunchAtLoginHelper.setEnabled(launchAtLogin)
+            return .handled
+        case .searchMode:
+            KeyboardContextMenu.popChoices(
+                title: { $0.label },
+                current: searchMode,
+                choices: SearchMode.allCases
+            ) { searchMode = $0 }
             return .handled
         case .pasteAuto:
             pasteAutomatically.toggle()

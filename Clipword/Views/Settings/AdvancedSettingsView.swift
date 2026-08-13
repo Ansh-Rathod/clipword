@@ -95,8 +95,9 @@ struct AdvancedSettingsView: View {
         .onKeyPress(.leftArrow) { move(-1, vertical: false) }
         .onKeyPress(.downArrow) { move(1, vertical: true) }
         .onKeyPress(.upArrow) { move(-1, vertical: true) }
-        .onKeyPress(.return) { activate() }
-        .onKeyPress(.space) { activate() }
+        .onKeyPress(.return) { activate(delta: 1) }
+        .onKeyPress(.space) { activate(delta: -1) }
+        .onKeyPress(.escape) { exitToSidebar() }
     }
 
     private func move(_ delta: Int, vertical: Bool) -> KeyPress.Result {
@@ -107,22 +108,32 @@ struct AdvancedSettingsView: View {
             return .handled
         }
         if vertical, delta < 0 {
-            focus = nil
             arrowFocusExit?(.chromeLeading)
         } else if !vertical, delta < 0, sidebarOpenForFocus {
-            focus = nil
             arrowFocusExit?(.previous)
         }
         return .handled
     }
 
-    private func activate() -> KeyPress.Result {
+    private func exitToSidebar() -> KeyPress.Result {
+        guard focus != nil else { return .ignored }
+        arrowFocusExit?(.previous)
+        return .handled
+    }
+
+    private func activate(delta: Int) -> KeyPress.Result {
         switch focus {
         case .pause: ignoreEvents.toggle(); return .handled
         case .clearOnQuit: clearOnQuit.toggle(); return .handled
         case .clearClipboard: clearSystemClipboard.toggle(); return .handled
         case .stopWords: analyticsStopWords.toggle(); return .handled
         case .typing: typingAnalyticsEnabled.toggle(); return .handled
+        case .interval:
+            clipboardCheckInterval = min(2.0, max(0.1, clipboardCheckInterval + Double(delta) * 0.1))
+            return .handled
+        case .minWordLength:
+            analyticsMinWordLength = min(10, max(1, analyticsMinWordLength + delta))
+            return .handled
         case .requestPermission:
             PasteService.requestAccessibility()
             return .handled

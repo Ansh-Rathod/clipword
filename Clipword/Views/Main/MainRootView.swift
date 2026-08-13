@@ -259,9 +259,8 @@ struct MainRootView: View {
     private func handleContentExit(_ direction: ArrowFocusExitDirection) {
         switch direction {
         case .previous:
-            // Only ← from page edge enters an already-open sidebar.
-            guard showSidebar else { return }
-            chromeFocus = .sidebar
+            // Esc from a page (or ← at left edge): highlight the sidebar, or its toggle when hidden.
+            chromeFocus = showSidebar ? .sidebar : .sidebarToggle
         case .chromeLeading:
             chromeFocus = .sidebarToggle
         case .chromeTrailing:

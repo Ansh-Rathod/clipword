@@ -2,7 +2,7 @@ import Defaults
 import SwiftUI
 
 private enum IgnoreFocus: Hashable {
-    case allowOnly, field, add, list
+    case tab(Int), allowOnly, field, add, list
 }
 
 struct IgnoreSettingsView: View {
@@ -27,33 +27,42 @@ struct IgnoreSettingsView: View {
     @FocusState private var fieldActive: Bool
 
     private var focusOrder: [IgnoreFocus] {
-        selectedTab == 0
-            ? [.allowOnly, .field, .add, .list]
-            : [.field, .add, .list]
+        var items: [IgnoreFocus] = [.tab(0), .tab(1), .tab(2)]
+        if selectedTab == 0 { items.append(.allowOnly) }
+        items.append(contentsOf: [.field, .add, .list])
+        return items
     }
 
     private var focusRows: [[IgnoreFocus]] {
-        focusOrder.map { [$0] }
+        let tabs: [IgnoreFocus] = [.tab(0), .tab(1), .tab(2)]
+        let content: [IgnoreFocus] = selectedTab == 0
+            ? [.allowOnly, .field, .add, .list]
+            : [.field, .add, .list]
+        return [tabs] + content.map { [$0] }
     }
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            Tab("Apps", systemImage: "app.badge", value: 0) {
-                appsTab
+        VStack(alignment: .leading, spacing: 0) {
+            tabBar
+            Divider()
+            Group {
+                switch selectedTab {
+                case 0: appsTab
+                case 1: typesTab
+                default: regexTab
+                }
             }
-            Tab("Types", systemImage: "doc.badge.gearshape", value: 1) {
-                typesTab
-            }
-            Tab("Regex", systemImage: "text.magnifyingglass", value: 2) {
-                regexTab
-            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .padding()
         .onAppear {
             if contentShouldTakeFocus { focus = focusOrder.first }
         }
         .onChange(of: enterToken) { _, _ in focus = focusOrder.first; fieldActive = false }
-        .onChange(of: selectedTab) { _, _ in focus = focusOrder.first; fieldActive = false }
+        .onChange(of: selectedTab) { _, newTab in
+            focus = .tab(newTab)
+            fieldActive = false
+        }
         .onChange(of: contentShouldTakeFocus) { _, should in
             if !should { focus = nil; fieldActive = false }
         }
@@ -72,9 +81,41 @@ struct IgnoreSettingsView: View {
                 focus = .field
                 return .handled
             }
-            return .ignored
+            // Esc from any highlighted control → back to the sidebar.
+            guard focus != nil else { return .ignored }
+            arrowFocusExit?(.previous)
+            return .handled
         }
         .onDisappear { appState.isSearchFocused = false }
+    }
+
+    private var tabBar: some View {
+        HStack(spacing: 4) {
+            tabButton("Apps", systemImage: "app.badge", tab: 0)
+            tabButton("Types", systemImage: "doc.badge.gearshape", tab: 1)
+            tabButton("Regex", systemImage: "text.magnifyingglass", tab: 2)
+            Spacer()
+        }
+        .padding(.bottom, 10)
+    }
+
+    private func tabButton(_ title: String, systemImage: String, tab: Int) -> some View {
+        Button {
+            selectedTab = tab
+        } label: {
+            Label(title, systemImage: systemImage)
+                .font(.body)
+                .foregroundStyle(selectedTab == tab ? Color.accentColor : Color.primary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .background(
+                    selectedTab == tab ? Color.accentColor.opacity(0.12) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 6)
+                )
+        }
+        .buttonStyle(.borderless)
+        .arrowFocus($focus, equals: IgnoreFocus.tab(tab))
+        .pointingHandCursor()
     }
 
     private var appsTab: some View {
@@ -193,17 +234,16 @@ struct IgnoreSettingsView: View {
         case .moved(let next):
             fieldActive = false
             focus = next
+            if case .tab(let tab) = next { selectedTab = tab }
             return .handled
         case .listMove:
             return .handled
         case .exitPrevious:
             if direction == .up {
                 fieldActive = false
-                focus = nil
                 arrowFocusExit?(current == focusRows.first?.first ? .chromeLeading : .chromeTrailing)
             } else if direction == .left, sidebarOpenForFocus {
                 fieldActive = false
-                focus = nil
                 arrowFocusExit?(.previous)
             }
             return .handled
@@ -234,6 +274,9 @@ struct IgnoreSettingsView: View {
 
     private func activate() -> KeyPress.Result {
         switch focus {
+        case .tab(let tab):
+            selectedTab = tab
+            return .handled
         case .allowOnly:
             allowedAppsOnly.toggle()
             return .handled

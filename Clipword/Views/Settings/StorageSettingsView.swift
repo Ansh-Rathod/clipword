@@ -53,8 +53,9 @@ struct StorageSettingsView: View {
         .onKeyPress(.leftArrow) { move(-1, vertical: false) }
         .onKeyPress(.downArrow) { move(1, vertical: true) }
         .onKeyPress(.upArrow) { move(-1, vertical: true) }
-        .onKeyPress(.return) { activate() }
-        .onKeyPress(.space) { activate() }
+        .onKeyPress(.return) { activate(delta: 1) }
+        .onKeyPress(.space) { activate(delta: -1) }
+        .onKeyPress(.escape) { exitToSidebar() }
     }
 
     private func move(_ delta: Int, vertical: Bool) -> KeyPress.Result {
@@ -65,21 +66,36 @@ struct StorageSettingsView: View {
             return .handled
         }
         if vertical, delta < 0 {
-            focus = nil
             arrowFocusExit?(.chromeLeading)
         } else if !vertical, delta < 0, sidebarOpenForFocus {
-            focus = nil
             arrowFocusExit?(.previous)
         }
         return .handled
     }
 
-    private func activate() -> KeyPress.Result {
+    private func exitToSidebar() -> KeyPress.Result {
+        guard focus != nil else { return .ignored }
+        arrowFocusExit?(.previous)
+        return .handled
+    }
+
+    private func activate(delta: Int) -> KeyPress.Result {
         switch focus {
         case .saveText: saveText.toggle(); return .handled
         case .saveImages: saveImages.toggle(); return .handled
         case .saveFiles: saveFiles.toggle(); return .handled
-        default: return .ignored
+        case .historySize:
+            historySize = min(999, max(1, historySize + delta))
+            return .handled
+        case .sortOrder:
+            KeyboardContextMenu.popChoices(
+                title: { $0.label },
+                current: sortOrder,
+                choices: SortOrder.allCases
+            ) { sortOrder = $0 }
+            return .handled
+        default:
+            return .ignored
         }
     }
 }
