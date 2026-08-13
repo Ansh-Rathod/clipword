@@ -37,22 +37,12 @@ struct GeneralSettingsView: View {
                 }
             }
             Section("Keyboard") {
-                shortcutRow("⌘1–7", "Switch section")
-                shortcutRow("⌘[ ⌘]", "Previous / next section")
-                shortcutRow("⌘⇧[ ⌘⇧]", "Previous / next analytics view")
-                shortcutRow("⌘\\", "Toggle sidebar")
-                shortcutRow("⌘F", "Search")
-                shortcutRow("↑ ↓", "Move in list / sidebar")
+                shortcutRow("←", "Focus sidebar")
+                shortcutRow("→ / Return", "Enter section from sidebar")
+                shortcutRow("↑ ↓", "Move in sidebar or list")
                 shortcutRow("Return", "Paste selected item")
-                shortcutRow("⌘Return", "Paste and close")
-                shortcutRow("⌘C", "Copy selected item")
-                shortcutRow("⌘E", "Edit selected item")
-                shortcutRow("⌃1–9", "Jump to clipboard item")
-                shortcutRow("⌘W / Esc", "Close window")
-                shortcutRow("⌘Q", "Quit")
-                Text("Enable Full Keyboard Access in System Settings → Keyboard to Tab through buttons and toggles.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                shortcutRow("⌘K", "Item actions menu")
+                shortcutRow("Esc", "Close window")
             }
             Section("Search") {
                 Picker("Search mode", selection: $searchMode) {

@@ -140,9 +140,11 @@ struct TimelineRowView: View {
         .padding(.vertical, 4)
         .contextMenu {
             Button("Copy", action: onCopy)
+                .keyboardShortcut("c")
             Button("Paste", action: onPaste)
             Divider()
             Button("Delete", role: .destructive, action: onDelete)
+                .keyboardShortcut(.delete, modifiers: .command)
         }
     }
 }

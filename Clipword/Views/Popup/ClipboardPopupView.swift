@@ -57,7 +57,6 @@ struct ClipboardPopupView: View {
         .sheet(item: $editingItem) { item in
             EditContentSheet(item: item)
         }
-        .background { itemKeys }
         .onKeyPress(.upArrow) {
             guard !sidebarFocused else { return .ignored }
             moveSelection(-1)
@@ -70,14 +69,12 @@ struct ClipboardPopupView: View {
         }
         .onKeyPress(.return) {
             guard !sidebarFocused else { return .ignored }
-            if field == .list || field == .search, let item = selectedItem {
-                let paste = NSEvent.modifierFlags.contains(.option)
-                let strip = NSEvent.modifierFlags.contains(.shift)
-                historyStore.select(item, paste: paste, withoutFormatting: strip)
-                appState.hideWindow()
-                return .handled
-            }
-            return .ignored
+            guard let item = selectedItem else { return .ignored }
+            let paste = NSEvent.modifierFlags.contains(.option)
+            let strip = NSEvent.modifierFlags.contains(.shift)
+            historyStore.select(item, paste: paste, withoutFormatting: strip)
+            appState.hideWindow()
+            return .handled
         }
         .onKeyPress(.escape) {
             if field == .search {
@@ -91,19 +88,9 @@ struct ClipboardPopupView: View {
             }
             return .ignored
         }
-        .onKeyPress(keys: ["1", "2", "3", "4", "5", "6", "7", "8", "9"]) { press in
-            guard press.modifiers.contains(.control),
-                  !press.modifiers.contains(.command),
-                  let char = press.characters.first,
-                  let index = Int(String(char)), index >= 1, index <= 9 else { return .ignored }
-            let items = historyStore.displayedItems
-            guard items.count >= index else { return .ignored }
-            historyStore.selectedItemID = items[index - 1].id
-            return .handled
-        }
-        .onKeyPress(keys: ["c"]) { press in
-            guard press.modifiers.contains(.command), field != .search, let item = selectedItem else { return .ignored }
-            historyStore.select(item, paste: false)
+        .onKeyPress(keys: ["k"]) { press in
+            guard press.modifiers.contains(.command), let item = selectedItem else { return .ignored }
+            showItemMenu(item)
             return .handled
         }
         .onAppear {
@@ -209,24 +196,6 @@ struct ClipboardPopupView: View {
         }
     }
 
-    private var itemKeys: some View {
-        Group {
-            Button("Paste") {
-                guard let item = selectedItem else { return }
-                historyStore.select(item, paste: true)
-                appState.hideWindow()
-            }
-            .keyboardShortcut(.return, modifiers: .command)
-            Button("Edit…") { editingItem = selectedItem }
-                .keyboardShortcut("e", modifiers: .command)
-                .disabled(selectedItem == nil)
-        }
-        .opacity(0)
-        .frame(width: 0, height: 0)
-        .accessibilityHidden(true)
-        .allowsHitTesting(false)
-    }
-
     @ViewBuilder
     private var detailPane: some View {
         if let item = selectedItem {
@@ -240,20 +209,43 @@ struct ClipboardPopupView: View {
 
     @ViewBuilder
     private func itemContextMenu(for item: HistoryItem) -> some View {
-                Button("Copy") { historyStore.select(item, paste: false) }
-                Button("Paste") {
-                    historyStore.select(item, paste: true)
-                    appState.hideWindow()
-                }
-                Button("Add to Paste Stack") { historyStore.addToPasteStack(item) }
-                Divider()
-                Button("Edit…") { editingItem = item }
-                Button(item.isBookmarked ? "Remove Bookmark" : "Bookmark") {
-                    historyStore.toggleBookmark(item)
-                }
-                Button(item.isPinned ? "Unpin" : "Pin") { historyStore.togglePin(item) }
-                Divider()
-                Button("Delete", role: .destructive) { historyStore.delete(item) }
+        Button("Copy") { historyStore.select(item, paste: false) }
+            .keyboardShortcut("c")
+        Button("Paste") {
+            historyStore.select(item, paste: true)
+            appState.hideWindow()
+        }
+        Button("Add to Paste Stack") { historyStore.addToPasteStack(item) }
+            .keyboardShortcut("v", modifiers: [.command, .shift])
+        Divider()
+        Button("Edit…") { editingItem = item }
+            .keyboardShortcut("e")
+        Button(item.isBookmarked ? "Remove Bookmark" : "Bookmark") {
+            historyStore.toggleBookmark(item)
+        }
+        .keyboardShortcut("b", modifiers: .option)
+        Button(item.isPinned ? "Unpin" : "Pin") { historyStore.togglePin(item) }
+            .keyboardShortcut("p", modifiers: .option)
+        Divider()
+        Button("Delete", role: .destructive) { historyStore.delete(item) }
+            .keyboardShortcut(.delete, modifiers: .command)
+    }
+
+    private func showItemMenu(_ item: HistoryItem) {
+        KeyboardContextMenu.popHistory(
+            copy: { historyStore.select(item, paste: false) },
+            paste: {
+                historyStore.select(item, paste: true)
+                appState.hideWindow()
+            },
+            addToStack: { historyStore.addToPasteStack(item) },
+            edit: { editingItem = item },
+            toggleBookmark: { historyStore.toggleBookmark(item) },
+            bookmarkTitle: item.isBookmarked ? "Remove Bookmark" : "Bookmark",
+            togglePin: { historyStore.togglePin(item) },
+            pinTitle: item.isPinned ? "Unpin" : "Pin",
+            delete: { historyStore.delete(item) }
+        )
     }
 
     private func moveSelection(_ delta: Int) {

@@ -96,7 +96,6 @@ struct BookmarksView: View {
         .sheet(item: $editingItem) { item in
             EditBookmarkSheet(item: item)
         }
-        .background { bookmarkKeys }
         .onKeyPress(.upArrow) {
             guard !sidebarFocused else { return .ignored }
             moveSelection(-1)
@@ -109,14 +108,12 @@ struct BookmarksView: View {
         }
         .onKeyPress(.return) {
             guard !sidebarFocused else { return .ignored }
-            if field == .list || field == .search, let item = selectedItem {
-                let paste = NSEvent.modifierFlags.contains(.option)
-                let strip = NSEvent.modifierFlags.contains(.shift)
-                historyStore.selectBookmark(item, paste: paste, withoutFormatting: strip)
-                appState.hideWindow()
-                return .handled
-            }
-            return .ignored
+            guard let item = selectedItem else { return .ignored }
+            let paste = NSEvent.modifierFlags.contains(.option)
+            let strip = NSEvent.modifierFlags.contains(.shift)
+            historyStore.selectBookmark(item, paste: paste, withoutFormatting: strip)
+            appState.hideWindow()
+            return .handled
         }
         .onKeyPress(.escape) {
             if field == .search {
@@ -129,9 +126,9 @@ struct BookmarksView: View {
             }
             return .ignored
         }
-        .onKeyPress(keys: ["c"]) { press in
-            guard press.modifiers.contains(.command), field != .search, let item = selectedItem else { return .ignored }
-            historyStore.selectBookmark(item, paste: false)
+        .onKeyPress(keys: ["k"]) { press in
+            guard press.modifiers.contains(.command), let item = selectedItem else { return .ignored }
+            showItemMenu(item)
             return .handled
         }
         .onAppear {
@@ -206,15 +203,18 @@ struct BookmarksView: View {
                             }
                             .contextMenu {
                                 Button("Copy") { historyStore.selectBookmark(item, paste: false) }
+                                    .keyboardShortcut("c")
                                 Button("Paste") {
                                     historyStore.selectBookmark(item, paste: true)
                                     appState.hideWindow()
                                 }
                                 Divider()
                                 Button("Edit…") { editingItem = item }
+                                    .keyboardShortcut("e")
                                 Button("Remove Bookmark", role: .destructive) {
                                     historyStore.deleteBookmark(item)
                                 }
+                                .keyboardShortcut(.delete, modifiers: .command)
                             }
                     }
                 } header: {
@@ -234,22 +234,16 @@ struct BookmarksView: View {
         }
     }
 
-    private var bookmarkKeys: some View {
-        Group {
-            Button("Paste") {
-                guard let item = selectedItem else { return }
+    private func showItemMenu(_ item: BookmarkItem) {
+        KeyboardContextMenu.popBookmark(
+            copy: { historyStore.selectBookmark(item, paste: false) },
+            paste: {
                 historyStore.selectBookmark(item, paste: true)
                 appState.hideWindow()
-            }
-            .keyboardShortcut(.return, modifiers: .command)
-            Button("Edit…") { editingItem = selectedItem }
-                .keyboardShortcut("e", modifiers: .command)
-                .disabled(selectedItem == nil)
-        }
-        .opacity(0)
-        .frame(width: 0, height: 0)
-        .accessibilityHidden(true)
-        .allowsHitTesting(false)
+            },
+            edit: { editingItem = item },
+            remove: { historyStore.deleteBookmark(item) }
+        )
     }
 
     @ViewBuilder

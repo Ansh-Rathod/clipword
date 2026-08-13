@@ -30,18 +30,6 @@ enum MainSection: String, CaseIterable, Identifiable {
         }
     }
 
-    var commandKey: KeyEquivalent {
-        switch self {
-        case .clipboard: "1"
-        case .bookmarks: "2"
-        case .analytics: "3"
-        case .general: "4"
-        case .storage: "5"
-        case .ignore: "6"
-        case .advanced: "7"
-        }
-    }
-
     static let primary: [MainSection] = [.clipboard, .bookmarks, .analytics]
     static let settings: [MainSection] = [.general, .storage, .ignore, .advanced]
 }
@@ -63,7 +51,7 @@ enum ContentFocus: Hashable {
 
 struct MainRootView: View {
     @Environment(AppState.self) private var appState
-    @State private var showSidebar = false
+    @State private var showSidebar = true
     @FocusState private var sidebarFocused: Bool
 
     var body: some View {
@@ -90,7 +78,32 @@ struct MainRootView: View {
         .toolbarVisibility(.hidden, for: .windowToolbar)
         .toolbar(removing: .title)
         .toolbar(removing: .sidebarToggle)
-        .background { navigationKeys }
+        .onKeyPress(.leftArrow) {
+            if appState.isSearchFocused { return .ignored }
+            if !showSidebar { showSidebar = true }
+            DispatchQueue.main.async { sidebarFocused = true }
+            return .handled
+        }
+        .onKeyPress(.rightArrow) {
+            guard sidebarFocused else { return .ignored }
+            sidebarFocused = false
+            return .handled
+        }
+        .onKeyPress(.upArrow) {
+            guard sidebarFocused else { return .ignored }
+            appState.cycleSection(-1)
+            return .handled
+        }
+        .onKeyPress(.downArrow) {
+            guard sidebarFocused else { return .ignored }
+            appState.cycleSection(1)
+            return .handled
+        }
+        .onKeyPress(.return) {
+            guard sidebarFocused else { return .ignored }
+            sidebarFocused = false
+            return .handled
+        }
         .onKeyPress(.escape) {
             if appState.isSearchFocused { return .ignored }
             if sidebarFocused {
@@ -99,6 +112,14 @@ struct MainRootView: View {
             }
             appState.hideWindow()
             return .handled
+        }
+        .background {
+            Button("Quit Clipword") { NSApplication.shared.terminate(nil) }
+                .keyboardShortcut("q", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+                .allowsHitTesting(false)
         }
     }
 
@@ -113,8 +134,7 @@ struct MainRootView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
-            .keyboardShortcut("\\", modifiers: .command)
-            .help(showSidebar ? "Hide Sidebar (⌘\\)" : "Show Sidebar (⌘\\)")
+            .help(showSidebar ? "Hide Sidebar (← to return)" : "Show Sidebar (←)")
 
             Text(appState.mainSection.title)
                 .font(.headline)
@@ -132,7 +152,7 @@ struct MainRootView: View {
             }
             .buttonStyle(.borderless)
             .keyboardShortcut("w", modifiers: .command)
-            .help("Close (⌘W)")
+            .help("Close (Esc)")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -158,9 +178,6 @@ struct MainRootView: View {
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
         .toolbar(.hidden)
-        .onChange(of: appState.mainSection) { _, _ in
-            sidebarFocused = false
-        }
     }
 
     @ViewBuilder
@@ -181,33 +198,6 @@ struct MainRootView: View {
         case .analytics:
             AnalyticsRootView()
         }
-    }
-
-    private var navigationKeys: some View {
-        Group {
-            ForEach(MainSection.allCases) { section in
-                Button(section.title) {
-                    appState.selectSection(section)
-                    sidebarFocused = false
-                }
-                .keyboardShortcut(section.commandKey, modifiers: .command)
-            }
-            Button("Previous Section") { appState.cycleSection(-1) }
-                .keyboardShortcut("[", modifiers: .command)
-            Button("Next Section") { appState.cycleSection(1) }
-                .keyboardShortcut("]", modifiers: .command)
-            Button("Focus Search") {
-                guard appState.mainSection == .clipboard || appState.mainSection == .bookmarks else { return }
-                appState.requestSearchFocus()
-            }
-            .keyboardShortcut("f", modifiers: .command)
-            Button("Quit Clipword") { NSApplication.shared.terminate(nil) }
-                .keyboardShortcut("q", modifiers: .command)
-        }
-        .opacity(0)
-        .frame(width: 0, height: 0)
-        .accessibilityHidden(true)
-        .allowsHitTesting(false)
     }
 
     private func toggleSidebar() {

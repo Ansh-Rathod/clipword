@@ -22,6 +22,7 @@ enum AnalyticsSection: String, CaseIterable, Identifiable {
 
 struct AnalyticsRootView: View {
     @Environment(AnalyticsEngine.self) private var analyticsEngine
+    @Environment(\.sidebarFocused) private var sidebarFocused
     @State private var section: AnalyticsSection = .overview
     @State private var preset: TimeRangePreset = .week
     @State private var customStart = Calendar.current.date(byAdding: .day, value: -7, to: .now) ?? .now
@@ -49,7 +50,6 @@ struct AnalyticsRootView: View {
                     .frame(maxWidth: 420)
             }
             .padding(.horizontal)
-            .background { analyticsKeys }
 
             Group {
                 switch section {
@@ -75,25 +75,33 @@ struct AnalyticsRootView: View {
         }
         .padding(.vertical)
         .focusSection()
-    }
-
-    private var analyticsKeys: some View {
-        Group {
-            Button("Previous Analytics") { cycleSection(-1) }
-                .keyboardShortcut("[", modifiers: [.command, .shift])
-            Button("Next Analytics") { cycleSection(1) }
-                .keyboardShortcut("]", modifiers: [.command, .shift])
+        .onKeyPress(.upArrow) {
+            guard !sidebarFocused else { return .ignored }
+            cycleSection(-1)
+            return .handled
         }
-        .opacity(0)
-        .frame(width: 0, height: 0)
-        .accessibilityHidden(true)
-        .allowsHitTesting(false)
+        .onKeyPress(.downArrow) {
+            guard !sidebarFocused else { return .ignored }
+            cycleSection(1)
+            return .handled
+        }
+        .onKeyPress(.rightArrow) {
+            guard !sidebarFocused else { return .ignored }
+            cyclePreset(1)
+            return .handled
+        }
     }
 
     private func cycleSection(_ delta: Int) {
         let all = AnalyticsSection.allCases
         guard let index = all.firstIndex(of: section) else { return }
         section = all[(index + delta + all.count) % all.count]
+    }
+
+    private func cyclePreset(_ delta: Int) {
+        let all = TimeRangePreset.allCases
+        guard let index = all.firstIndex(of: preset) else { return }
+        preset = all[(index + delta + all.count) % all.count]
     }
 }
 
