@@ -59,24 +59,20 @@ final class WindowManager {
                     .environment(analyticsEngine)
                     .environment(appState)
                     .environment(appState.searchService)
-                    .toolbarVisibility(.hidden, for: .windowToolbar)
-                    .toolbar(removing: .title)
-                    .toolbar(removing: .sidebarToggle)
+                    .ignoresSafeArea()
             )
             let hosting = NSHostingView(rootView: root)
             hosting.frame = NSRect(origin: .zero, size: Self.windowSize)
 
             let panel = KeyablePanel(
                 contentRect: hosting.frame,
-                styleMask: [.titled, .closable, .fullSizeContentView, .nonactivatingPanel],
+                styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
                 backing: .buffered,
                 defer: false
             )
             panel.isFloatingPanel = true
             panel.level = .floating
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
-            panel.titleVisibility = .hidden
-            panel.titlebarAppearsTransparent = true
             panel.isMovableByWindowBackground = true
             panel.backgroundColor = .windowBackgroundColor
             panel.isOpaque = true
@@ -85,10 +81,6 @@ final class WindowManager {
             panel.isReleasedWhenClosed = false
             panel.becomesKeyOnlyIfNeeded = false
             panel.contentView = hosting
-            panel.toolbar = nil
-            panel.standardWindowButton(.closeButton)?.isHidden = true
-            panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
-            panel.standardWindowButton(.zoomButton)?.isHidden = true
             panel.delegate = PanelDelegate.shared
             PanelDelegate.shared.manager = self
 
@@ -101,9 +93,7 @@ final class WindowManager {
                     .environment(analyticsEngine)
                     .environment(appState)
                     .environment(appState.searchService)
-                    .toolbarVisibility(.hidden, for: .windowToolbar)
-                    .toolbar(removing: .title)
-                    .toolbar(removing: .sidebarToggle)
+                    .ignoresSafeArea()
             )
         }
 
@@ -131,16 +121,18 @@ final class WindowManager {
 
     private func applyChrome(to window: NSWindow) {
         window.toolbar = nil
+        window.title = ""
+        window.styleMask = [.borderless, .nonactivatingPanel, .fullSizeContentView]
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        window.styleMask.insert(.fullSizeContentView)
-        window.title = ""
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
         if let closeButton = window.standardWindowButton(.closeButton),
            let titleBarContainer = closeButton.superview?.superview {
             titleBarContainer.isHidden = true
+            titleBarContainer.alphaValue = 0
+            titleBarContainer.frame.size.height = 0
         }
     }
 

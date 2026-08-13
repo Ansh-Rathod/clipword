@@ -34,25 +34,15 @@ enum MainSection: String, CaseIterable, Identifiable {
     static let settings: [MainSection] = [.general, .storage, .ignore, .advanced]
 }
 
-private struct SidebarFocusedKey: EnvironmentKey {
-    static let defaultValue = false
-}
-
-extension EnvironmentValues {
-    var sidebarFocused: Bool {
-        get { self[SidebarFocusedKey.self] }
-        set { self[SidebarFocusedKey.self] = newValue }
-    }
-}
-
-enum ContentFocus: Hashable {
-    case search, list
+private enum ChromeFocus: Hashable {
+    case sidebarToggle, close, sidebar
 }
 
 struct MainRootView: View {
     @Environment(AppState.self) private var appState
-    @State private var showSidebar = true
-    @FocusState private var sidebarFocused: Bool
+    @State private var showSidebar = false
+    @FocusState private var chromeFocus: ChromeFocus?
+    @State private var enterContentToken = 0
 
     var body: some View {
         @Bindable var appState = appState
@@ -60,7 +50,7 @@ struct MainRootView: View {
             if showSidebar {
                 sidebar
                     .frame(width: 180)
-                    .focused($sidebarFocused)
+                    .arrowFocus($chromeFocus, equals: .sidebar)
                     .transition(.move(edge: .leading).combined(with: .opacity))
                 Divider()
             }
@@ -70,44 +60,27 @@ struct MainRootView: View {
                 Divider()
                 detailView
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .environment(\.sidebarFocused, sidebarFocused)
+                    .environment(\.arrowFocusEnterToken, enterContentToken)
+                    .environment(\.contentShouldTakeFocus, chromeFocus == nil)
+                    .environment(\.arrowFocusExit) { direction in
+                        handleContentExit(direction)
+                    }
             }
         }
-        .frame(width: 700, height: 500)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(.easeInOut(duration: 0.2), value: showSidebar)
-        .toolbarVisibility(.hidden, for: .windowToolbar)
-        .toolbar(removing: .title)
-        .toolbar(removing: .sidebarToggle)
-        .onKeyPress(.leftArrow) {
-            if appState.isSearchFocused { return .ignored }
-            if !showSidebar { showSidebar = true }
-            DispatchQueue.main.async { sidebarFocused = true }
-            return .handled
-        }
-        .onKeyPress(.rightArrow) {
-            guard sidebarFocused else { return .ignored }
-            sidebarFocused = false
-            return .handled
-        }
-        .onKeyPress(.upArrow) {
-            guard sidebarFocused else { return .ignored }
-            appState.cycleSection(-1)
-            return .handled
-        }
-        .onKeyPress(.downArrow) {
-            guard sidebarFocused else { return .ignored }
-            appState.cycleSection(1)
-            return .handled
-        }
-        .onKeyPress(.return) {
-            guard sidebarFocused else { return .ignored }
-            sidebarFocused = false
-            return .handled
-        }
+        .background(.background)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onKeyPress(.rightArrow) { handleChromeArrow(.right) }
+        .onKeyPress(.leftArrow) { handleChromeArrow(.left) }
+        .onKeyPress(.downArrow) { handleChromeArrow(.down) }
+        .onKeyPress(.upArrow) { handleChromeArrow(.up) }
+        .onKeyPress(.return) { activateChrome() }
+        .onKeyPress(.space) { activateChrome() }
         .onKeyPress(.escape) {
             if appState.isSearchFocused { return .ignored }
-            if sidebarFocused {
-                sidebarFocused = false
+            if chromeFocus == .sidebar {
+                chromeFocus = .sidebarToggle
                 return .handled
             }
             appState.hideWindow()
@@ -134,7 +107,8 @@ struct MainRootView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
-            .help(showSidebar ? "Hide Sidebar (← to return)" : "Show Sidebar (←)")
+            .arrowFocus($chromeFocus, equals: .sidebarToggle)
+            .help(showSidebar ? "Hide Sidebar" : "Show Sidebar")
 
             Text(appState.mainSection.title)
                 .font(.headline)
@@ -151,6 +125,7 @@ struct MainRootView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
+            .arrowFocus($chromeFocus, equals: .close)
             .keyboardShortcut("w", modifiers: .command)
             .help("Close (Esc)")
         }
@@ -200,12 +175,100 @@ struct MainRootView: View {
         }
     }
 
+    private func handleChromeArrow(_ direction: SpatialDirection) -> KeyPress.Result {
+        guard let current = chromeFocus else { return .ignored }
+
+        // Sidebar: up/down change section only; right/Return enter page; left → toggle
+        if current == .sidebar {
+            switch direction {
+            case .up:
+                appState.cycleSection(-1)
+                return .handled
+            case .down:
+                appState.cycleSection(1)
+                return .handled
+            case .right:
+                enterContent()
+                return .handled
+            case .left:
+                chromeFocus = .sidebarToggle
+                return .handled
+            }
+        }
+
+        // Toggle / close row
+        switch (current, direction) {
+        case (.sidebarToggle, .right):
+            chromeFocus = .close
+            return .handled
+        case (.sidebarToggle, .left):
+            return .handled
+        case (.sidebarToggle, .down):
+            if showSidebar {
+                chromeFocus = .sidebar
+            } else {
+                enterContent()
+            }
+            return .handled
+        case (.sidebarToggle, .up):
+            return .handled
+        case (.close, .left):
+            chromeFocus = .sidebarToggle
+            return .handled
+        case (.close, .right):
+            enterContent()
+            return .handled
+        case (.close, .down):
+            if showSidebar {
+                chromeFocus = .sidebar
+            } else {
+                enterContent()
+            }
+            return .handled
+        case (.close, .up):
+            return .handled
+        default:
+            return .ignored
+        }
+    }
+
+    private func activateChrome() -> KeyPress.Result {
+        guard let current = chromeFocus else { return .ignored }
+        switch current {
+        case .sidebarToggle:
+            toggleSidebar()
+        case .close:
+            appState.hideWindow()
+        case .sidebar:
+            enterContent()
+        }
+        return .handled
+    }
+
+    private func enterContent() {
+        chromeFocus = nil
+        enterContentToken += 1
+    }
+
+    private func handleContentExit(_ direction: ArrowFocusExitDirection) {
+        switch direction {
+        case .previous:
+            if showSidebar {
+                chromeFocus = .sidebar
+            } else {
+                chromeFocus = .sidebarToggle
+            }
+        case .next:
+            chromeFocus = .sidebarToggle
+        }
+    }
+
     private func toggleSidebar() {
         showSidebar.toggle()
         if showSidebar {
-            DispatchQueue.main.async { sidebarFocused = true }
-        } else {
-            sidebarFocused = false
+            DispatchQueue.main.async { chromeFocus = .sidebar }
+        } else if chromeFocus == .sidebar {
+            chromeFocus = .sidebarToggle
         }
     }
 }

@@ -22,11 +22,20 @@ enum AnalyticsSection: String, CaseIterable, Identifiable {
 
 struct AnalyticsRootView: View {
     @Environment(AnalyticsEngine.self) private var analyticsEngine
-    @Environment(\.sidebarFocused) private var sidebarFocused
+    @Environment(\.arrowFocusExit) private var arrowFocusExit
+    @Environment(\.arrowFocusEnterToken) private var enterToken
+    @Environment(\.contentShouldTakeFocus) private var contentShouldTakeFocus
     @State private var section: AnalyticsSection = .overview
     @State private var preset: TimeRangePreset = .week
     @State private var customStart = Calendar.current.date(byAdding: .day, value: -7, to: .now) ?? .now
     @State private var customEnd = Date.now
+    @FocusState private var focus: AnalyticsFocus?
+
+    private enum AnalyticsFocus: Hashable {
+        case section, range
+    }
+
+    private let order: [AnalyticsFocus] = [.section, .range]
 
     private var interval: DateInterval? {
         preset.interval(customStart: customStart, customEnd: customEnd)
@@ -42,12 +51,13 @@ struct AnalyticsRootView: View {
                 }
                 .pickerStyle(.menu)
                 .frame(maxWidth: 200)
-                .focusable()
+                .arrowFocus($focus, equals: .section)
 
                 Spacer()
 
                 TimeRangePickerView(preset: $preset, customStart: $customStart, customEnd: $customEnd)
                     .frame(maxWidth: 420)
+                    .arrowFocus($focus, equals: .range)
             }
             .padding(.horizontal)
 
@@ -74,34 +84,25 @@ struct AnalyticsRootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .padding(.vertical)
-        .focusSection()
-        .onKeyPress(.upArrow) {
-            guard !sidebarFocused else { return .ignored }
-            cycleSection(-1)
-            return .handled
-        }
-        .onKeyPress(.downArrow) {
-            guard !sidebarFocused else { return .ignored }
-            cycleSection(1)
-            return .handled
-        }
-        .onKeyPress(.rightArrow) {
-            guard !sidebarFocused else { return .ignored }
-            cyclePreset(1)
-            return .handled
-        }
+        .onAppear { if contentShouldTakeFocus { focus = .section } }
+        .onChange(of: enterToken) { _, _ in focus = .section }
+        .onChange(of: contentShouldTakeFocus) { _, should in if !should { focus = nil } }
+        .onKeyPress(.rightArrow) { move(1) }
+        .onKeyPress(.leftArrow) { move(-1) }
+        .onKeyPress(.downArrow) { move(1) }
+        .onKeyPress(.upArrow) { move(-1) }
     }
 
-    private func cycleSection(_ delta: Int) {
-        let all = AnalyticsSection.allCases
-        guard let index = all.firstIndex(of: section) else { return }
-        section = all[(index + delta + all.count) % all.count]
-    }
-
-    private func cyclePreset(_ delta: Int) {
-        let all = TimeRangePreset.allCases
-        guard let index = all.firstIndex(of: preset) else { return }
-        preset = all[(index + delta + all.count) % all.count]
+    private func move(_ delta: Int) -> KeyPress.Result {
+        guard focus != nil else { return .ignored }
+        var current = focus
+        if advanceArrowFocus(&current, order: order, delta: delta) {
+            focus = current
+            return .handled
+        }
+        focus = nil
+        arrowFocusExit?(delta < 0 ? .previous : .next)
+        return .handled
     }
 }
 
