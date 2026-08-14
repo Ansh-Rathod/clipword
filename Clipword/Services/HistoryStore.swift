@@ -32,12 +32,30 @@ final class HistoryStore {
     }
 
     func reload() {
+        pruneByRetention()
         let sort = sortDescriptor()
         var descriptor = FetchDescriptor<HistoryItem>(sortBy: [sort])
         descriptor.fetchLimit = Defaults[.historySize] + 50
         items = (try? modelContext.fetch(descriptor)) ?? []
         scheduleCategoryBackfill()
         applyFilters()
+    }
+
+    /// Deletes every unpinned item older than the retention cutoff (see
+    /// `Defaults[.historyRetention]`). Uses its own fetch so items beyond the
+    /// in-memory `historySize` cap are still pruned. No-op for unlimited.
+    func pruneByRetention() {
+        guard let cutoff = Defaults[.historyRetention].cutoffDate else { return }
+        var descriptor = FetchDescriptor<HistoryItem>(
+            predicate: #Predicate { $0.lastCopiedAt < cutoff && !$0.isPinned }
+        )
+        descriptor.fetchLimit = 2000
+        let stale = (try? modelContext.fetch(descriptor)) ?? []
+        guard !stale.isEmpty else { return }
+        for item in stale {
+            modelContext.delete(item)
+        }
+        try? modelContext.save()
     }
 
     private func scheduleCategoryBackfill() {

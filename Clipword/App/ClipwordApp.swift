@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        migrateDefaultsIfNeeded()
 
         let schema = Schema([HistoryItem.self, WordFrequency.self, DailyStats.self, BookmarkItem.self])
         let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -49,6 +50,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WindowManager.shared.configure(historyStore: store, analyticsEngine: analytics, appState: state)
         statusBarController.install(appState: state)
         registerHotkeys()
+    }
+
+    /// One-time default migrations (safe to run before any SwiftData work).
+    private func migrateDefaultsIfNeeded() {
+        if !Defaults[.didSetDefaultIgnoredApps] {
+            var apps = Defaults[.ignoredApps]
+            for bundleId in ["com.apple.Passwords", "com.apple.keychainaccess"]
+            where !apps.contains(bundleId) {
+                apps.append(bundleId)
+            }
+            Defaults[.ignoredApps] = apps
+            Defaults[.didSetDefaultIgnoredApps] = true
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

@@ -19,6 +19,7 @@ struct ClipboardPopupView: View {
 
     @State private var editingItem: HistoryItem?
     @State private var forceSearch = false
+    @State private var listScrollTarget: UUID?
     @FocusState private var focus: ClipboardFocus?
     @FocusState private var searchFieldActive: Bool
 
@@ -221,6 +222,7 @@ struct ClipboardPopupView: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+        .scrollPosition(id: $listScrollTarget)
         .arrowListFocus($focus, equals: .list)
         .onDeleteCommand {
             guard let item = selectedItem else { return }
@@ -259,6 +261,7 @@ struct ClipboardPopupView: View {
             if !historyStore.displayedItems.isEmpty {
                 historyStore.selectedItemID = historyStore.displayedItems.first?.id
                 focus = .list
+                listScrollTarget = historyStore.selectedItemID
             } else {
                 focus = toolbar.first
             }
@@ -320,10 +323,12 @@ struct ClipboardPopupView: View {
                 focus = focusRows.first?.first ?? .typeFilter
             } else {
                 historyStore.selectedItemID = items[index - 1].id
+                listScrollTarget = historyStore.selectedItemID
             }
         } else {
             let next = min(items.count - 1, index + 1)
             historyStore.selectedItemID = items[next].id
+            listScrollTarget = historyStore.selectedItemID
         }
         return .handled
     }

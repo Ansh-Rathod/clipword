@@ -2,7 +2,7 @@ import Defaults
 import SwiftUI
 
 private enum StorageFocus: Hashable {
-    case saveText, saveImages, saveFiles, historySize, sortOrder
+    case saveText, saveImages, saveFiles, historySize, retention, sortOrder
 }
 
 struct StorageSettingsView: View {
@@ -15,11 +15,12 @@ struct StorageSettingsView: View {
     @Default(.saveImages) private var saveImages
     @Default(.saveFiles) private var saveFiles
     @Default(.historySize) private var historySize
+    @Default(.historyRetention) private var historyRetention
     @Default(.sortOrder) private var sortOrder
     @FocusState private var focus: StorageFocus?
 
     private let order: [StorageFocus] = [
-        .saveText, .saveImages, .saveFiles, .historySize, .sortOrder
+        .saveText, .saveImages, .saveFiles, .historySize, .retention, .sortOrder
     ]
 
     var body: some View {
@@ -35,6 +36,12 @@ struct StorageSettingsView: View {
             Section("History") {
                 Stepper("History size: \(historySize)", value: $historySize, in: 1...999)
                     .arrowFocus($focus, equals: .historySize)
+                Picker("Keep history for", selection: $historyRetention) {
+                    ForEach(HistoryRetention.allCases) { retention in
+                        Text(retention.label).tag(retention)
+                    }
+                }
+                .arrowFocus($focus, equals: .retention)
                 Picker("Sort by", selection: $sortOrder) {
                     ForEach(SortOrder.allCases) { order in
                         Text(order.label).tag(order)
@@ -46,6 +53,9 @@ struct StorageSettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+        .onChange(of: historyRetention) { _, _ in
+            historyStore.reload()
+        }
         .onAppear { if contentShouldTakeFocus { focus = order.first } }
         .onChange(of: enterToken) { _, _ in focus = order.first }
         .onChange(of: contentShouldTakeFocus) { _, should in if !should { focus = nil } }
@@ -86,6 +96,13 @@ struct StorageSettingsView: View {
         case .saveFiles: saveFiles.toggle(); return .handled
         case .historySize:
             historySize = min(999, max(1, historySize + delta))
+            return .handled
+        case .retention:
+            KeyboardContextMenu.popChoices(
+                title: { $0.label },
+                current: historyRetention,
+                choices: HistoryRetention.allCases
+            ) { historyRetention = $0 }
             return .handled
         case .sortOrder:
             KeyboardContextMenu.popChoices(

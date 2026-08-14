@@ -9,3 +9,7 @@ user can edit text content ✓
 analytics tab: single pane (menu picker, no nested sidebar) ✓
 extra analytics: unique words, reuse rate, avg time-to-paste, peak hours, typed vs copied
 bookmarks sidebar tab (same UI as clipboard; survives history delete) ✓
+storage settings: keep history for (day/week/month/3m/6m/year/unlimited, default unlimited) ✓
+ignore tab: app picker from Finder (defaults: Passwords, Keychain Access) ✓
+paste switches back to previous app before ⌘V so it lands in the user's app ✓
+keyboard nav scrolls lists (history, bookmarks, ignore) to keep selection visible ✓

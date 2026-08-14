@@ -1,8 +1,9 @@
 import Defaults
 import SwiftUI
+import UniformTypeIdentifiers
 
 private enum IgnoreFocus: Hashable {
-    case tab(Int), allowOnly, field, add, list
+    case tab(Int), allowOnly, field, add, pick, list
 }
 
 struct IgnoreSettingsView: View {
@@ -22,6 +23,9 @@ struct IgnoreSettingsView: View {
     @State private var selectedApp: String?
     @State private var selectedType: String?
     @State private var selectedRegex: String?
+    @State private var appListScrollTarget: String?
+    @State private var typeListScrollTarget: String?
+    @State private var regexListScrollTarget: String?
     @State private var selectedTab = 0
     @FocusState private var focus: IgnoreFocus?
     @FocusState private var fieldActive: Bool
@@ -36,7 +40,7 @@ struct IgnoreSettingsView: View {
     private var focusRows: [[IgnoreFocus]] {
         let tabs: [IgnoreFocus] = [.tab(0), .tab(1), .tab(2)]
         let content: [IgnoreFocus] = selectedTab == 0
-            ? [.allowOnly, .field, .add, .list]
+            ? [.allowOnly, .field, .add, .pick, .list]
             : [.field, .add, .list]
         return [tabs] + content.map { [$0] }
     }
@@ -129,6 +133,13 @@ struct IgnoreSettingsView: View {
                 Button("Add") { addApp() }
                     .disabled(newApp.isEmpty)
                     .arrowFocus($focus, equals: .add)
+                Button {
+                    pickAppFromFinder()
+                } label: {
+                    Label("Choose App…", systemImage: "folder")
+                }
+                .help("Pick an app from Finder; its clipboard content will be ignored")
+                .arrowFocus($focus, equals: .pick)
             }
             .background {
                 Color.clear
@@ -147,6 +158,7 @@ struct IgnoreSettingsView: View {
                     .tag(app)
                 }
             }
+            .scrollPosition(id: $appListScrollTarget)
             .arrowFocus($focus, equals: .list)
             .onDeleteCommand {
                 if let selectedApp { removeApp(selectedApp) }
@@ -178,6 +190,7 @@ struct IgnoreSettingsView: View {
                     .tag(type)
                 }
             }
+            .scrollPosition(id: $typeListScrollTarget)
             .arrowFocus($focus, equals: .list)
             .onDeleteCommand {
                 if let selectedType { removeType(selectedType) }
@@ -209,6 +222,7 @@ struct IgnoreSettingsView: View {
                     .tag(pattern)
                 }
             }
+            .scrollPosition(id: $regexListScrollTarget)
             .arrowFocus($focus, equals: .list)
             .onDeleteCommand {
                 if let selectedRegex { removeRegex(selectedRegex) }
@@ -258,17 +272,23 @@ struct IgnoreSettingsView: View {
             guard !ignoredApps.isEmpty else { return }
             let items = ignoredApps
             let index = selectedApp.flatMap { items.firstIndex(of: $0) } ?? 0
-            selectedApp = items[max(0, min(items.count - 1, index + delta))]
+            let next = items[max(0, min(items.count - 1, index + delta))]
+            selectedApp = next
+            appListScrollTarget = next
         case 1:
             guard !ignoredPasteboardTypes.isEmpty else { return }
             let items = ignoredPasteboardTypes
             let index = selectedType.flatMap { items.firstIndex(of: $0) } ?? 0
-            selectedType = items[max(0, min(items.count - 1, index + delta))]
+            let next = items[max(0, min(items.count - 1, index + delta))]
+            selectedType = next
+            typeListScrollTarget = next
         default:
             guard !ignoredRegexPatterns.isEmpty else { return }
             let items = ignoredRegexPatterns
             let index = selectedRegex.flatMap { items.firstIndex(of: $0) } ?? 0
-            selectedRegex = items[max(0, min(items.count - 1, index + delta))]
+            let next = items[max(0, min(items.count - 1, index + delta))]
+            selectedRegex = next
+            regexListScrollTarget = next
         }
     }
 
@@ -290,6 +310,9 @@ struct IgnoreSettingsView: View {
             default: addRegex()
             }
             return .handled
+        case .pick:
+            pickAppFromFinder()
+            return .handled
         case .list:
             switch selectedTab {
             case 0: if let selectedApp { removeApp(selectedApp) }
@@ -306,6 +329,26 @@ struct IgnoreSettingsView: View {
         guard !newApp.isEmpty, !ignoredApps.contains(newApp) else { return }
         ignoredApps.append(newApp)
         newApp = ""
+    }
+
+    /// Opens a Finder picker so the user can choose an app (or apps) whose
+    /// clipboard content should be ignored. Adds each chosen app's bundle ID.
+    private func pickAppFromFinder() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose App to Ignore"
+        panel.message = "Clipword will ignore clipboard content copied from the selected app(s)."
+        panel.prompt = "Add"
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            guard let bundle = Bundle(url: url), let bundleId = bundle.bundleIdentifier else { continue }
+            if !ignoredApps.contains(bundleId) {
+                ignoredApps.append(bundleId)
+            }
+        }
     }
 
     private func removeApp(_ app: String) {

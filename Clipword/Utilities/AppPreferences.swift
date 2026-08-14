@@ -37,6 +37,41 @@ enum SortOrder: String, CaseIterable, Defaults.Serializable, Identifiable {
     }
 }
 
+/// How long history is kept before unpinned entries are pruned.
+enum HistoryRetention: String, CaseIterable, Defaults.Serializable, Identifiable {
+    case day, week, month, threeMonths, sixMonths, year, unlimited
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .day: "A Day"
+        case .week: "A Week"
+        case .month: "A Month"
+        case .threeMonths: "3 Months"
+        case .sixMonths: "6 Months"
+        case .year: "A Year"
+        case .unlimited: "Unlimited"
+        }
+    }
+
+    /// Items older than this are pruned; `nil` means keep everything.
+    var cutoffDate: Date? {
+        guard self != .unlimited else { return nil }
+        let calendar = Calendar.current
+        let now = Date()
+        switch self {
+        case .day: return calendar.date(byAdding: .day, value: -1, to: now)
+        case .week: return calendar.date(byAdding: .day, value: -7, to: now)
+        case .month: return calendar.date(byAdding: .month, value: -1, to: now)
+        case .threeMonths: return calendar.date(byAdding: .month, value: -3, to: now)
+        case .sixMonths: return calendar.date(byAdding: .month, value: -6, to: now)
+        case .year: return calendar.date(byAdding: .year, value: -1, to: now)
+        case .unlimited: return nil
+        }
+    }
+}
+
 enum SearchMode: String, CaseIterable, Defaults.Serializable, Identifiable {
     case exact, fuzzy, regex, mixed
 
@@ -104,8 +139,15 @@ extension Defaults.Keys {
     static let saveImages = Key<Bool>("saveImages", default: true)
     static let saveFiles = Key<Bool>("saveFiles", default: true)
     static let historySize = Key<Int>("historySize", default: 200)
+    static let historyRetention = Key<HistoryRetention>("historyRetention", default: .unlimited)
     static let sortOrder = Key<SortOrder>("sortOrder", default: .lastCopied)
-    static let ignoredApps = Key<[String]>("ignoredApps", default: [])
+    static let ignoredApps = Key<[String]>("ignoredApps", default: [
+        "com.apple.Passwords",
+        "com.apple.keychainaccess"
+    ])
+    /// One-time migration: seed the default ignored apps on first launch (also
+    /// covers installs that predate the non-empty default).
+    static let didSetDefaultIgnoredApps = Key<Bool>("didSetDefaultIgnoredApps", default: false)
     static let allowedAppsOnly = Key<Bool>("allowedAppsOnly", default: false)
     static let ignoredPasteboardTypes = Key<[String]>("ignoredPasteboardTypes", default: [
         "org.nspasteboard.ConcealedType",

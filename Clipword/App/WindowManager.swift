@@ -20,6 +20,8 @@ final class WindowManager {
     private weak var appState: AppState?
     private weak var statusButton: NSStatusBarButton?
     private var resignObserver: NSObjectProtocol?
+    /// App that was frontmost before the popup opened; pastes are delivered to it.
+    private var previousApp: NSRunningApplication?
 
     func configure(historyStore: HistoryStore, analyticsEngine: AnalyticsEngine, appState: AppState) {
         self.historyStore = historyStore
@@ -107,6 +109,11 @@ final class WindowManager {
         }
 
         guard let panel else { return }
+        // Remember who the user came from so pastes can return to that app.
+        if let frontmost = NSWorkspace.shared.frontmostApplication,
+           frontmost.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            previousApp = frontmost
+        }
         applyChrome(to: panel)
         positionNearStatusItem(panel)
         NSApp.activate(ignoringOtherApps: true)
@@ -122,6 +129,24 @@ final class WindowManager {
 
     func hideMainWindow() {
         panel?.orderOut(nil)
+    }
+
+    /// Brings back the app that was frontmost before the popup opened, so a
+    /// simulated ⌘V lands there instead of in Clipword. Only switches when
+    /// Clipword itself is still frontmost (e.g. right after the panel closes);
+    /// if the user already moved to another app, that app keeps focus.
+    @discardableResult
+    func reactivatePreviousApp() -> Bool {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier else {
+            return false
+        }
+        guard let previousApp,
+              !previousApp.isTerminated,
+              previousApp.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
+            return false
+        }
+        previousApp.activate(options: [.activateAllWindows])
+        return true
     }
 
     func handlePanelClosed() {

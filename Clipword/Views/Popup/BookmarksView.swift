@@ -22,6 +22,7 @@ struct BookmarksView: View {
     @State private var activeAppBundleId: String?
     @State private var editingItem: BookmarkItem?
     @State private var forceSearch = false
+    @State private var listScrollTarget: UUID?
     @FocusState private var focus: BookmarkFocus?
     @FocusState private var searchFieldActive: Bool
 
@@ -259,6 +260,7 @@ struct BookmarksView: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+        .scrollPosition(id: $listScrollTarget)
         .arrowListFocus($focus, equals: .list)
         .onDeleteCommand {
             guard let item = selectedItem else { return }
@@ -297,6 +299,7 @@ struct BookmarksView: View {
             if !filteredBookmarks.isEmpty {
                 historyStore.selectedBookmarkID = filteredBookmarks.first?.id
                 focus = .list
+                listScrollTarget = historyStore.selectedBookmarkID
             } else {
                 focus = toolbar.first
             }
@@ -357,10 +360,12 @@ struct BookmarksView: View {
                 focus = focusRows.first?.first ?? .typeFilter
             } else {
                 historyStore.selectedBookmarkID = items[index - 1].id
+                listScrollTarget = historyStore.selectedBookmarkID
             }
         } else {
             let next = min(items.count - 1, index + 1)
             historyStore.selectedBookmarkID = items[next].id
+            listScrollTarget = historyStore.selectedBookmarkID
         }
         return .handled
     }

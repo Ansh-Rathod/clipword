@@ -19,6 +19,17 @@ enum PasteService {
             return
         }
 
+        // Deliver the keystroke to the app the user came from, not to Clipword:
+        // our popup only ever activates Clipword itself. Wait a beat after the
+        // app switch so the target app is frontmost before the event is posted.
+        let switchedBack = WindowManager.shared.reactivatePreviousApp()
+        let delay = switchedBack ? 0.12 : 0.0
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            postPasteKeyEvent()
+        }
+    }
+
+    private static func postPasteKeyEvent() {
         let source = CGEventSource(stateID: .hidSystemState)
         let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true)
         let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false)
