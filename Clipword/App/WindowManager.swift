@@ -146,6 +146,10 @@ final class WindowManager {
             return false
         }
         previousApp.activate(options: [.activateAllWindows])
+        // Handed focus to the source app; drop the reference so a later paste
+        // can't target a stale app. (Kept across hide, because the panel hides
+        // before the deferred ⌘V fires.)
+        self.previousApp = nil
         return true
     }
 

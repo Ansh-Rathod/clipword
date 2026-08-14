@@ -21,10 +21,18 @@ final class HistoryStore {
     /// main thread at launch froze the app (hotkey never even registered).
     private static let categoryBackfillMaxBytes = 512 * 1024
 
+    /// Rows deleted per `pruneByRetention` pass; the loop keeps going until the
+    /// store is drained, so this is a batch size, not a cap.
+    private static let retentionPruneBatchSize = 1000
+
+    private var retentionTimer: Timer?
+
     init(modelContext: ModelContext) {
         self.modelContext = modelContext
+        pruneByRetention()
         reload()
         reloadBookmarks()
+        scheduleRetentionPrune()
     }
 
     func setAnalyticsEngine(_ engine: AnalyticsEngine) {
@@ -32,7 +40,6 @@ final class HistoryStore {
     }
 
     func reload() {
-        pruneByRetention()
         let sort = sortDescriptor()
         var descriptor = FetchDescriptor<HistoryItem>(sortBy: [sort])
         descriptor.fetchLimit = Defaults[.historySize] + 50
@@ -46,16 +53,35 @@ final class HistoryStore {
     /// in-memory `historySize` cap are still pruned. No-op for unlimited.
     func pruneByRetention() {
         guard let cutoff = Defaults[.historyRetention].cutoffDate else { return }
-        var descriptor = FetchDescriptor<HistoryItem>(
-            predicate: #Predicate { $0.lastCopiedAt < cutoff && !$0.isPinned }
-        )
-        descriptor.fetchLimit = 2000
-        let stale = (try? modelContext.fetch(descriptor)) ?? []
-        guard !stale.isEmpty else { return }
-        for item in stale {
-            modelContext.delete(item)
+        while true {
+            var descriptor = FetchDescriptor<HistoryItem>(
+                predicate: #Predicate { $0.lastCopiedAt < cutoff && !$0.isPinned }
+            )
+            descriptor.fetchLimit = Self.retentionPruneBatchSize
+            let stale = (try? modelContext.fetch(descriptor)) ?? []
+            guard !stale.isEmpty else { break }
+            for item in stale {
+                if selectedItemID == item.id { selectedItemID = nil }
+                modelContext.delete(item)
+            }
+            // Bail on a failed save so we can't spin on unpersisted deletes.
+            guard (try? modelContext.save()) != nil else { break }
+            if stale.count < Self.retentionPruneBatchSize { break }
         }
-        try? modelContext.save()
+    }
+
+    /// Re-checks retention periodically so items that age past the cutoff while
+    /// the app keeps running are still pruned without touching the paste path.
+    private func scheduleRetentionPrune() {
+        retentionTimer = Timer.scheduledTimer(
+            withTimeInterval: 6 * 60 * 60,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.pruneByRetention()
+            }
+        }
+        retentionTimer?.tolerance = 10 * 60
     }
 
     private func scheduleCategoryBackfill() {

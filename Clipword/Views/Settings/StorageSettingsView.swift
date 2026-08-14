@@ -54,6 +54,7 @@ struct StorageSettingsView: View {
         .formStyle(.grouped)
         .padding()
         .onChange(of: historyRetention) { _, _ in
+            historyStore.pruneByRetention()
             historyStore.reload()
         }
         .onAppear { if contentShouldTakeFocus { focus = order.first } }

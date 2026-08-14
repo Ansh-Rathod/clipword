@@ -158,8 +158,8 @@ struct IgnoreSettingsView: View {
                     .tag(app)
                 }
             }
-            .scrollPosition(id: $appListScrollTarget)
             .arrowFocus($focus, equals: .list)
+            .scrollToVisible(target: appListScrollTarget)
             .onDeleteCommand {
                 if let selectedApp { removeApp(selectedApp) }
             }
@@ -190,8 +190,8 @@ struct IgnoreSettingsView: View {
                     .tag(type)
                 }
             }
-            .scrollPosition(id: $typeListScrollTarget)
             .arrowFocus($focus, equals: .list)
+            .scrollToVisible(target: typeListScrollTarget)
             .onDeleteCommand {
                 if let selectedType { removeType(selectedType) }
             }
@@ -222,8 +222,8 @@ struct IgnoreSettingsView: View {
                     .tag(pattern)
                 }
             }
-            .scrollPosition(id: $regexListScrollTarget)
             .arrowFocus($focus, equals: .list)
+            .scrollToVisible(target: regexListScrollTarget)
             .onDeleteCommand {
                 if let selectedRegex { removeRegex(selectedRegex) }
             }

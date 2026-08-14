@@ -32,11 +32,24 @@ struct AdvancedSettingsView: View {
         return items
     }
 
+    /// Scroll target that reveals the whole section containing `focus`: the last
+    /// row of the preceding section, so the target section's header stays
+    /// visible. The first section anchors to its own first row.
+    private func sectionAnchor(for focus: AdvancedFocus) -> AdvancedFocus {
+        switch focus {
+        case .pause, .interval: return .pause
+        case .clearOnQuit, .clearClipboard: return .interval
+        case .stopWords, .minWordLength, .typing: return .clearClipboard
+        case .requestPermission: return .typing
+        }
+    }
+
     var body: some View {
         Form {
             Section("Monitoring") {
                 Toggle("Pause clipboard monitoring", isOn: $ignoreEvents)
                     .arrowFocus($focus, equals: .pause)
+                    .id(AdvancedFocus.pause)
                 LabeledContent("Check interval") {
                     Stepper(value: $clipboardCheckInterval, in: 0.1...2, step: 0.1) {
                         Text("\(clipboardCheckInterval, specifier: "%.1f")s")
@@ -44,20 +57,26 @@ struct AdvancedSettingsView: View {
                     }
                 }
                 .arrowFocus($focus, equals: .interval)
+                .id(AdvancedFocus.interval)
             }
             Section("Clipboard") {
                 Toggle("Clear history on quit", isOn: $clearOnQuit)
                     .arrowFocus($focus, equals: .clearOnQuit)
+                    .id(AdvancedFocus.clearOnQuit)
                 Toggle("Clear system clipboard after copy", isOn: $clearSystemClipboard)
                     .arrowFocus($focus, equals: .clearClipboard)
+                    .id(AdvancedFocus.clearClipboard)
             }
             Section("Analytics") {
                 Toggle("Exclude common stop words", isOn: $analyticsStopWords)
                     .arrowFocus($focus, equals: .stopWords)
+                    .id(AdvancedFocus.stopWords)
                 Stepper("Minimum word length: \(analyticsMinWordLength)", value: $analyticsMinWordLength, in: 1...10)
                     .arrowFocus($focus, equals: .minWordLength)
+                    .id(AdvancedFocus.minWordLength)
                 Toggle("Track typing (words & time)", isOn: $typingAnalyticsEnabled)
                     .arrowFocus($focus, equals: .typing)
+                    .id(AdvancedFocus.typing)
                     .onChange(of: typingAnalyticsEnabled) { _, enabled in
                         if enabled {
                             appState.typingMonitor.start()
@@ -82,12 +101,14 @@ struct AdvancedSettingsView: View {
                             PasteService.requestAccessibility()
                         }
                         .arrowFocus($focus, equals: .requestPermission)
+                        .id(AdvancedFocus.requestPermission)
                     }
                 }
             }
         }
         .formStyle(.grouped)
         .padding()
+        .scrollToVisible(target: focus.map { sectionAnchor(for: $0) }, anchor: .top)
         .onAppear { if contentShouldTakeFocus { focus = order.first } }
         .onChange(of: enterToken) { _, _ in focus = order.first }
         .onChange(of: contentShouldTakeFocus) { _, should in if !should { focus = nil } }

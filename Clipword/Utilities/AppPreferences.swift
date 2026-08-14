@@ -141,10 +141,13 @@ extension Defaults.Keys {
     static let historySize = Key<Int>("historySize", default: 200)
     static let historyRetention = Key<HistoryRetention>("historyRetention", default: .unlimited)
     static let sortOrder = Key<SortOrder>("sortOrder", default: .lastCopied)
-    static let ignoredApps = Key<[String]>("ignoredApps", default: [
+    /// Bundle IDs seeded into `ignoredApps` on fresh installs (and, once, via
+    /// `migrateDefaultsIfNeeded` for installs that predate the non-empty default).
+    static let defaultIgnoredAppBundleIDs: [String] = [
         "com.apple.Passwords",
         "com.apple.keychainaccess"
-    ])
+    ]
+    static let ignoredApps = Key<[String]>("ignoredApps", default: defaultIgnoredAppBundleIDs)
     /// One-time migration: seed the default ignored apps on first launch (also
     /// covers installs that predate the non-empty default).
     static let didSetDefaultIgnoredApps = Key<Bool>("didSetDefaultIgnoredApps", default: false)

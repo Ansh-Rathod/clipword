@@ -165,6 +165,29 @@ extension View {
         self.modifier(ArrowFocusRingModifier(forced: focus == value))
     }
 
+    /// Keeps the row identified by `target` visible whenever it changes.
+    ///
+    /// `List` doesn't support `.scrollPosition(id:)` — that modifier is
+    /// `ScrollView`-only and is a silent no-op on a `List`. This wraps the list
+    /// in a `ScrollViewReader` and calls `scrollTo`. A nil anchor scrolls the
+    /// minimum amount needed to make the target visible; a non-nil anchor aligns
+    /// the target to that point (e.g. `.top` snaps the target's top to the
+    /// scroll view's top).
+    func scrollToVisible<T: Hashable>(target: T?, anchor: UnitPoint? = nil) -> some View {
+        ScrollViewReader { proxy in
+            self
+                .onChange(of: target) { _, newValue in
+                    guard let newValue else { return }
+                    // Defer so the row's layout exists before we ask the scroll
+                    // view to reveal it; direct calls inside key handling can
+                    // be swallowed before the list updates.
+                    DispatchQueue.main.async {
+                        proxy.scrollTo(newValue, anchor: anchor)
+                    }
+                }
+        }
+    }
+
     func pointingHandCursor() -> some View {
         modifier(PointingHandOnHover())
     }

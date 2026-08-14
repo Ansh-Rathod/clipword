@@ -30,11 +30,24 @@ struct GeneralSettingsView: View {
         .searchMode, .pasteAuto, .pastePlain
     ]
 
+    /// Scroll target that reveals the whole section containing `focus`: the last
+    /// row of the preceding section, so the target section's header stays
+    /// visible. The first section anchors to its own first row.
+    private func sectionAnchor(for focus: GeneralFocus) -> GeneralFocus {
+        switch focus {
+        case .launchAtLogin: return .launchAtLogin
+        case .openShortcut, .pinShortcut, .bookmarkShortcut, .deleteShortcut: return .launchAtLogin
+        case .searchMode: return .deleteShortcut
+        case .pasteAuto, .pastePlain: return .searchMode
+        }
+    }
+
     var body: some View {
         Form {
             Section("Startup") {
                 Toggle("Launch at login", isOn: $launchAtLogin)
                     .arrowFocus($focus, equals: .launchAtLogin)
+                    .id(GeneralFocus.launchAtLogin)
                     .onChange(of: launchAtLogin) { _, enabled in
                         LaunchAtLoginHelper.setEnabled(enabled)
                     }
@@ -44,18 +57,22 @@ struct GeneralSettingsView: View {
                     KeyboardShortcuts.Recorder(for: .openClipword)
                 }
                 .arrowFocus($focus, equals: .openShortcut)
+                .id(GeneralFocus.openShortcut)
                 LabeledContent("Pin item") {
                     KeyboardShortcuts.Recorder(for: .pinItem)
                 }
                 .arrowFocus($focus, equals: .pinShortcut)
+                .id(GeneralFocus.pinShortcut)
                 LabeledContent("Bookmark item") {
                     KeyboardShortcuts.Recorder(for: .bookmarkItem)
                 }
                 .arrowFocus($focus, equals: .bookmarkShortcut)
+                .id(GeneralFocus.bookmarkShortcut)
                 LabeledContent("Delete item") {
                     KeyboardShortcuts.Recorder(for: .deleteItem)
                 }
                 .arrowFocus($focus, equals: .deleteShortcut)
+                .id(GeneralFocus.deleteShortcut)
             }
             Section("Keyboard") {
                 shortcutRow("← →", "Move within a row")
@@ -74,16 +91,20 @@ struct GeneralSettingsView: View {
                     }
                 }
                 .arrowFocus($focus, equals: .searchMode)
+                .id(GeneralFocus.searchMode)
             }
             Section("Paste") {
                 Toggle("Paste automatically", isOn: $pasteAutomatically)
                     .arrowFocus($focus, equals: .pasteAuto)
+                    .id(GeneralFocus.pasteAuto)
                 Toggle("Paste without formatting by default", isOn: $pasteWithoutFormatting)
                     .arrowFocus($focus, equals: .pastePlain)
+                    .id(GeneralFocus.pastePlain)
             }
         }
         .formStyle(.grouped)
         .padding()
+        .scrollToVisible(target: focus.map { sectionAnchor(for: $0) }, anchor: .top)
         .onAppear { if contentShouldTakeFocus { focus = order.first } }
         .onChange(of: enterToken) { _, _ in focus = order.first }
         .onChange(of: contentShouldTakeFocus) { _, should in if !should { focus = nil } }

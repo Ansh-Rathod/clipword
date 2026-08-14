@@ -56,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func migrateDefaultsIfNeeded() {
         if !Defaults[.didSetDefaultIgnoredApps] {
             var apps = Defaults[.ignoredApps]
-            for bundleId in ["com.apple.Passwords", "com.apple.keychainaccess"]
+            for bundleId in Defaults.Keys.defaultIgnoredAppBundleIDs
             where !apps.contains(bundleId) {
                 apps.append(bundleId)
             }

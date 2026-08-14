@@ -222,8 +222,8 @@ struct ClipboardPopupView: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
-        .scrollPosition(id: $listScrollTarget)
         .arrowListFocus($focus, equals: .list)
+        .scrollToVisible(target: listScrollTarget)
         .onDeleteCommand {
             guard let item = selectedItem else { return }
             historyStore.delete(item)
