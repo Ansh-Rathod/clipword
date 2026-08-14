@@ -15,6 +15,8 @@ struct IgnoreSettingsView: View {
     @Environment(\.arrowFocusEnterToken) private var enterToken
     @Environment(\.contentShouldTakeFocus) private var contentShouldTakeFocus
     @Environment(\.sidebarOpenForFocus) private var sidebarOpenForFocus
+    @Environment(\.globalJumpToken) private var globalJumpToken
+    @Environment(\.globalJumpDirection) private var globalJumpDirection
     @Environment(AppState.self) private var appState
 
     @State private var newApp = ""
@@ -67,6 +69,7 @@ struct IgnoreSettingsView: View {
             focus = .tab(newTab)
             fieldActive = false
         }
+        .onChange(of: globalJumpToken) { _, _ in applyGlobalJump(globalJumpDirection) }
         .onChange(of: contentShouldTakeFocus) { _, should in
             if !should { focus = nil; fieldActive = false }
         }
@@ -75,8 +78,9 @@ struct IgnoreSettingsView: View {
         }
         .onKeyPress(.rightArrow) { handleArrow(.right) }
         .onKeyPress(.leftArrow) { handleArrow(.left) }
-        .onKeyPress(.downArrow) { handleArrow(.down) }
-        .onKeyPress(.upArrow) { handleArrow(.up) }
+        .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+            handleArrow(press.key == .upArrow ? .up : .down, modifiers: press.modifiers)
+        }
         .onKeyPress(.return) { activate() }
         .onKeyPress(.space) { activate() }
         .onKeyPress(.escape) {
@@ -230,7 +234,33 @@ struct IgnoreSettingsView: View {
         }
     }
 
-    private func handleArrow(_ direction: SpatialDirection) -> KeyPress.Result {
+    /// ⌘↑/⌘↓ jump the current tab's list to its top/bottom item (or, when the
+    /// list is empty, the first/last focusable control). Works even when no
+    /// control is focused.
+    private func applyGlobalJump(_ direction: SpatialDirection) {
+        let hasItems: Bool
+        switch selectedTab {
+        case 0: hasItems = !ignoredApps.isEmpty
+        case 1: hasItems = !ignoredPasteboardTypes.isEmpty
+        default: hasItems = !ignoredRegexPatterns.isEmpty
+        }
+        guard hasItems else {
+            focus = direction == .up ? focusOrder.first : focusOrder.last
+            return
+        }
+        focus = .list
+        moveListSelection(direction == .up ? -10_000 : 10_000)
+    }
+
+    private func handleArrow(_ direction: SpatialDirection, modifiers: EventModifiers = []) -> KeyPress.Result {
+        // ⌘↑/⌘↓ jump to the top/bottom item from anywhere in the view (unless
+        // the text field is being edited, where they're text-navigation).
+        if (direction == .up || direction == .down), modifiers.contains(.command),
+           !(focus == .field && fieldActive) {
+            applyGlobalJump(direction)
+            return .handled
+        }
+
         guard let current = focus else { return .ignored }
 
         if current == .field, fieldActive {

@@ -26,6 +26,8 @@ struct AnalyticsRootView: View {
     @Environment(\.arrowFocusEnterToken) private var enterToken
     @Environment(\.contentShouldTakeFocus) private var contentShouldTakeFocus
     @Environment(\.sidebarOpenForFocus) private var sidebarOpenForFocus
+    @Environment(\.globalJumpToken) private var globalJumpToken
+    @Environment(\.globalJumpDirection) private var globalJumpDirection
     @State private var section: AnalyticsSection = .overview
     @State private var preset: TimeRangePreset = .week
     @State private var customStart = Calendar.current.date(byAdding: .day, value: -7, to: .now) ?? .now
@@ -116,11 +118,17 @@ struct AnalyticsRootView: View {
         .padding(.vertical)
         .onAppear { if contentShouldTakeFocus { focus = .section } }
         .onChange(of: enterToken) { _, _ in focus = .section }
+        .onChange(of: globalJumpToken) { _, _ in applyGlobalJump(globalJumpDirection) }
         .onChange(of: contentShouldTakeFocus) { _, should in if !should { focus = nil } }
         .onKeyPress(.rightArrow) { move(1, vertical: false) }
         .onKeyPress(.leftArrow) { move(-1, vertical: false) }
-        .onKeyPress(.downArrow) { move(1, vertical: true) }
-        .onKeyPress(.upArrow) { move(-1, vertical: true) }
+        .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+            if press.modifiers.contains(.command) {
+                applyGlobalJump(press.key == .upArrow ? .up : .down)
+                return .handled
+            }
+            return move(press.key == .upArrow ? -1 : 1, vertical: true)
+        }
         .onKeyPress(.return) { activate() }
         .onKeyPress(.space) { activate() }
         .onKeyPress(.escape) {
@@ -149,6 +157,12 @@ struct AnalyticsRootView: View {
             return .ignored
         }
         return .handled
+    }
+
+    /// ⌘↑/⌘↓ jump the toolbar controls to the first/last (works even when no
+    /// control is focused, e.g. right after leaving the page).
+    private func applyGlobalJump(_ direction: SpatialDirection) {
+        focus = direction == .up ? order.first : order.last
     }
 
     private func move(_ delta: Int, vertical: Bool) -> KeyPress.Result {

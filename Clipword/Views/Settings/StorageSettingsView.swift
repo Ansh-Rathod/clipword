@@ -11,6 +11,8 @@ struct StorageSettingsView: View {
     @Environment(\.arrowFocusEnterToken) private var enterToken
     @Environment(\.contentShouldTakeFocus) private var contentShouldTakeFocus
     @Environment(\.sidebarOpenForFocus) private var sidebarOpenForFocus
+    @Environment(\.globalJumpToken) private var globalJumpToken
+    @Environment(\.globalJumpDirection) private var globalJumpDirection
     @Default(.saveText) private var saveText
     @Default(.saveImages) private var saveImages
     @Default(.saveFiles) private var saveFiles
@@ -59,14 +61,26 @@ struct StorageSettingsView: View {
         }
         .onAppear { if contentShouldTakeFocus { focus = order.first } }
         .onChange(of: enterToken) { _, _ in focus = order.first }
+        .onChange(of: globalJumpToken) { _, _ in applyGlobalJump(globalJumpDirection) }
         .onChange(of: contentShouldTakeFocus) { _, should in if !should { focus = nil } }
         .onKeyPress(.rightArrow) { move(1, vertical: false) }
         .onKeyPress(.leftArrow) { move(-1, vertical: false) }
-        .onKeyPress(.downArrow) { move(1, vertical: true) }
-        .onKeyPress(.upArrow) { move(-1, vertical: true) }
+        .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+            if press.modifiers.contains(.command) {
+                applyGlobalJump(press.key == .upArrow ? .up : .down)
+                return .handled
+            }
+            return move(press.key == .upArrow ? -1 : 1, vertical: true)
+        }
         .onKeyPress(.return) { activate(delta: 1) }
         .onKeyPress(.space) { activate(delta: -1) }
         .onKeyPress(.escape) { exitToSidebar() }
+    }
+
+    /// ⌘↑/⌘↓ jump the form to its top or bottom row (works even when no row is
+    /// focused, e.g. right after leaving the page).
+    private func applyGlobalJump(_ direction: SpatialDirection) {
+        focus = direction == .up ? order.first : order.last
     }
 
     private func move(_ delta: Int, vertical: Bool) -> KeyPress.Result {

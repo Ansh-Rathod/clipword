@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import SwiftUI
 
 // MARK: - Arrow focus (web-style tabbing via arrows)
@@ -41,6 +42,14 @@ private struct SidebarOpenForFocusKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+private struct GlobalJumpTokenKey: EnvironmentKey {
+    static let defaultValue = 0
+}
+
+private struct GlobalJumpDirectionKey: EnvironmentKey {
+    static let defaultValue = SpatialDirection.down
+}
+
 extension EnvironmentValues {
     var arrowFocusExit: ((ArrowFocusExitDirection) -> Void)? {
         get { self[ArrowFocusExitKey.self] }
@@ -69,6 +78,19 @@ extension EnvironmentValues {
     var sidebarOpenForFocus: Bool {
         get { self[SidebarOpenForFocusKey.self] }
         set { self[SidebarOpenForFocusKey.self] = newValue }
+    }
+
+    /// Bumped by `MainRootView` when ⌘↑/⌘↓ should jump the current page's
+    /// content to its top/bottom (works even while the sidebar or chrome bar
+    /// holds focus). Pages observe it and apply their own jump.
+    var globalJumpToken: Int {
+        get { self[GlobalJumpTokenKey.self] }
+        set { self[GlobalJumpTokenKey.self] = newValue }
+    }
+
+    var globalJumpDirection: SpatialDirection {
+        get { self[GlobalJumpDirectionKey.self] }
+        set { self[GlobalJumpDirectionKey.self] = newValue }
     }
 }
 
@@ -447,8 +469,15 @@ struct StatCardView: View {
 /// multi-MB clipboard payloads. TextKit 2's NSTextLayoutManager lays out only the
 /// viewport, so huge documents render and scroll smoothly. Never becomes first
 /// responder so it can't trap the app's arrow-key navigation.
+///
+/// The input is still bounded to `previewCharacterLimit`: in the real panel the
+/// initial layout + scroll-view content sizing of a 10MB+ document blocked the
+/// main thread for seconds. A bounded head renders instantly; the full content
+/// is always available through Copy/Paste.
 struct ReadOnlyTextView: NSViewRepresentable {
     let text: String
+
+    static let previewCharacterLimit = 100_000
 
     func makeNSView(context: Context) -> NSScrollView {
         // Explicit TextKit 2: viewport-based layout for large documents. Avoid
@@ -479,7 +508,7 @@ struct ReadOnlyTextView: NSViewRepresentable {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
-        textView.string = text
+        textView.string = Self.bounded(text)
         textView.setSelectedRange(NSRange(location: 0, length: 0))
 
         let scrollView = NSScrollView()
@@ -495,11 +524,127 @@ struct ReadOnlyTextView: NSViewRepresentable {
         guard let textView = scrollView.documentView as? NSTextView else { return }
         // Only replace when the item actually changed — avoids relayout churn on
         // every SwiftUI body evaluation.
-        if textView.string != text {
-            textView.string = text
+        let display = Self.bounded(text)
+        if textView.string != display {
+            textView.string = display
             textView.setSelectedRange(NSRange(location: 0, length: 0))
             textView.scrollToBeginningOfDocument(nil)
         }
+    }
+
+    private static func bounded(_ text: String) -> String {
+        // utf16.count is O(1) (native/NSString-backed), so the truncation check
+        // itself never scans a multi-MB buffer; only the bounded prefix copy runs.
+        text.utf16.count > previewCharacterLimit ? String(text.prefix(previewCharacterLimit)) : text
+    }
+}
+
+/// Bounded text preview with a truncation footer for the detail panes.
+/// Rendering a multi-MB string in the panel (initial layout + scroll-view
+/// content sizing) blocks the main thread for seconds, so the preview shows a
+/// head and the footer makes the truncation explicit. The full content is
+/// still what gets copied/pasted.
+struct TextPreviewPane: View {
+    let text: String
+    let charCount: Int
+
+    private var isTruncated: Bool {
+        charCount > ReadOnlyTextView.previewCharacterLimit
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ReadOnlyTextView(text: text)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if isTruncated {
+                Divider()
+                Text("Preview shows the first \(ReadOnlyTextView.previewCharacterLimit.formatted()) of \(charCount.formatted()) characters — the full content is copied on paste")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+            }
+        }
+    }
+}
+
+/// Downsampled, cached image preview. Selecting a large screenshot previously
+/// decoded the full-resolution bitmap on the main thread during body
+/// evaluation — and re-decoded it on every re-render. This thumbnails via
+/// CGImageSource (bounded pixels, far less memory) off the main thread and
+/// caches per item, so switching between items never re-pays the decode cost.
+struct DetailImagePreview: View {
+    let id: UUID
+    let data: Data
+
+    @State private var image: NSImage?
+    @State private var failed = false
+
+    private nonisolated(unsafe) static let cache = NSCache<NSUUID, NSImage>()
+    private nonisolated static let maxPixelSize = 1600
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: 480)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if failed {
+                VStack(spacing: 6) {
+                    Image(systemName: "photo")
+                        .font(.title)
+                        .foregroundStyle(.secondary)
+                    Text("Preview unavailable")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 200)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, minHeight: 200)
+            }
+        }
+        .padding(20)
+        .task(id: id) {
+            await load()
+        }
+    }
+
+    @MainActor
+    private func load() async {
+        let key = id as NSUUID
+        if let cached = Self.cache.object(forKey: key) {
+            image = cached
+            return
+        }
+        let cgImage = await Task.detached(priority: .userInitiated) {
+            Self.downsampledCGImage(from: data)
+        }.value
+        if let cgImage {
+            let nsImage = NSImage(
+                cgImage: cgImage,
+                size: NSSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
+            )
+            Self.cache.setObject(nsImage, forKey: key)
+            image = nsImage
+        } else {
+            failed = true
+        }
+    }
+
+    private nonisolated static func downsampledCGImage(from data: Data) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 }
 

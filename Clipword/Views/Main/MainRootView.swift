@@ -44,6 +44,8 @@ struct MainRootView: View {
     @FocusState private var chromeFocus: ChromeFocus?
     @State private var enterContentToken = 0
     @State private var enterContentTarget: ArrowFocusEnterTarget = .listPreferred
+    @State private var globalJumpToken = 0
+    @State private var globalJumpDirection: SpatialDirection = .down
 
     var body: some View {
         @Bindable var appState = appState
@@ -65,6 +67,8 @@ struct MainRootView: View {
                     .environment(\.arrowFocusEnterTarget, enterContentTarget)
                     .environment(\.contentShouldTakeFocus, chromeFocus == nil)
                     .environment(\.sidebarOpenForFocus, showSidebar)
+                    .environment(\.globalJumpToken, globalJumpToken)
+                    .environment(\.globalJumpDirection, globalJumpDirection)
                     .environment(\.arrowFocusExit) { direction in
                         handleContentExit(direction)
                     }
@@ -76,8 +80,13 @@ struct MainRootView: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .onKeyPress(.rightArrow) { handleChromeArrow(.right) }
         .onKeyPress(.leftArrow) { handleChromeArrow(.left) }
-        .onKeyPress(.downArrow) { handleChromeArrow(.down) }
-        .onKeyPress(.upArrow) { handleChromeArrow(.up) }
+        .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+            let direction: SpatialDirection = press.key == .upArrow ? .up : .down
+            if press.modifiers.contains(.command) {
+                return handleGlobalJump(direction)
+            }
+            return handleChromeArrow(direction)
+        }
         .onKeyPress(.return) { activateChrome() }
         .onKeyPress(.space) { activateChrome() }
         .onKeyPress(.escape) {
@@ -263,6 +272,47 @@ struct MainRootView: View {
             enterContent(.listPreferred)
         }
         return .handled
+    }
+
+    /// ⌘↑/⌘↓ from any context (sidebar, chrome bar, or a page that didn't
+    /// consume the key) moves the current list/form to its top or bottom.
+    private func handleGlobalJump(_ direction: SpatialDirection) -> KeyPress.Result {
+        // While typing in search, ⌘↑/⌘↓ stays text navigation.
+        if appState.isSearchFocused { return .ignored }
+
+        // Sidebar column focused: jump the section list to its top/bottom.
+        if chromeFocus == .sidebar {
+            jumpSidebarSelection(direction)
+            return .handled
+        }
+
+        // Chrome bar (toggle/close) focused: with the sidebar open, jump its
+        // sections; otherwise enter content and ask the page to jump.
+        if chromeFocus != nil {
+            if showSidebar {
+                chromeFocus = .sidebar
+                jumpSidebarSelection(direction)
+            } else {
+                enterContent(.listPreferred)
+                requestContentJump(direction)
+            }
+            return .handled
+        }
+
+        // Content focused but nothing consumed the key (e.g. page focus was
+        // cleared): let the page's observer apply the jump.
+        requestContentJump(direction)
+        return .handled
+    }
+
+    private func jumpSidebarSelection(_ direction: SpatialDirection) {
+        let sections = MainSection.allCases
+        appState.mainSection = direction == .up ? sections.first! : sections.last!
+    }
+
+    private func requestContentJump(_ direction: SpatialDirection) {
+        globalJumpDirection = direction
+        globalJumpToken += 1
     }
 
     private func enterContent(_ target: ArrowFocusEnterTarget = .listPreferred) {

@@ -15,6 +15,8 @@ struct ClipboardPopupView: View {
     @Environment(\.arrowFocusEnterTarget) private var enterTarget
     @Environment(\.contentShouldTakeFocus) private var contentShouldTakeFocus
     @Environment(\.sidebarOpenForFocus) private var sidebarOpenForFocus
+    @Environment(\.globalJumpToken) private var globalJumpToken
+    @Environment(\.globalJumpDirection) private var globalJumpDirection
     @Default(.showSearchField) private var showSearchField
 
     @State private var editingItem: HistoryItem?
@@ -82,8 +84,9 @@ struct ClipboardPopupView: View {
         }
         .onKeyPress(.rightArrow) { handleArrow(.right) }
         .onKeyPress(.leftArrow) { handleArrow(.left) }
-        .onKeyPress(.downArrow) { handleArrow(.down) }
-        .onKeyPress(.upArrow) { handleArrow(.up) }
+        .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+            handleArrow(press.key == .upArrow ? .up : .down, modifiers: press.modifiers)
+        }
         .onKeyPress(.return) { activateFocused() }
         .onKeyPress(.space) { activateFocused(allowListPaste: false) }
         .onKeyPress(.escape) {
@@ -111,6 +114,9 @@ struct ClipboardPopupView: View {
         .onAppear { prepareContent(takeFocus: contentShouldTakeFocus) }
         .onChange(of: enterToken) { _, _ in
             takeKeyboardFocus(target: enterTarget)
+        }
+        .onChange(of: globalJumpToken) { _, _ in
+            applyGlobalJump(globalJumpDirection)
         }
         .onChange(of: contentShouldTakeFocus) { _, should in
             if !should {
@@ -273,7 +279,21 @@ struct ClipboardPopupView: View {
         searchFieldActive = false
     }
 
-    private func handleArrow(_ direction: SpatialDirection) -> KeyPress.Result {
+    /// Applies a ⌘↑/⌘↓ jump requested from the root (e.g. while the sidebar or
+    /// chrome bar holds focus). No-op while editing the search field.
+    private func applyGlobalJump(_ direction: SpatialDirection) {
+        guard !(focus == .search && searchFieldActive) else { return }
+        _ = handleListJump(direction)
+    }
+
+    private func handleArrow(_ direction: SpatialDirection, modifiers: EventModifiers = []) -> KeyPress.Result {
+        // ⌘↑/⌘↓ jump to the top/bottom item from anywhere in the view (unless
+        // the search field is being edited, where they're text-navigation).
+        if (direction == .up || direction == .down), modifiers.contains(.command),
+           !(focus == .search && searchFieldActive) {
+            return handleListJump(direction)
+        }
+
         guard let current = focus else { return .ignored }
 
         if current == .search, searchFieldActive {
@@ -311,6 +331,15 @@ struct ClipboardPopupView: View {
             // Stay on the page for → / ↓ at the edge.
             return .handled
         }
+    }
+
+    private func handleListJump(_ direction: SpatialDirection) -> KeyPress.Result {
+        let items = historyStore.displayedItems
+        guard let target = direction == .up ? items.first : items.last else { return .handled }
+        historyStore.selectedItemID = target.id
+        focus = .list
+        listScrollTarget = target.id
+        return .handled
     }
 
     private func handleListVertical(_ direction: SpatialDirection) -> KeyPress.Result {
@@ -440,17 +469,12 @@ struct ClipboardDetailPane: View {
 
     @ViewBuilder
     private var contentPreview: some View {
-        if item.contentType == .image, let data = item.imageData, let image = NSImage(data: data) {
+        if item.contentType == .image, let data = item.imageData {
             ScrollView {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: 480)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(20)
+                DetailImagePreview(id: item.id, data: data)
             }
         } else if let text = item.plainText, !text.isEmpty {
-            ReadOnlyTextView(text: text)
+            TextPreviewPane(text: text, charCount: item.charCount)
         } else {
             ScrollView {
                 Text(item.displayTitle)

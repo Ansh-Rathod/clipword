@@ -22,8 +22,13 @@ enum TextAnalytics {
     private static let analysisLimit = 50_000
 
     static func metrics(for text: String) -> Metrics {
-        let chars = text.count
-        let head = text.count > analysisLimit ? String(text.prefix(analysisLimit)) : text
+        // `text.utf16.count` is O(1) for native and NSString-backed strings,
+        // while `text.count` scans the whole buffer — repeated full-string
+        // scans on multi-MB pastes stalled the main thread at copy time.
+        // UTF-16 units equal character counts for ASCII/CJK text (only
+        // emoji-heavy payloads differ slightly).
+        let chars = text.utf16.count
+        let head = chars > analysisLimit ? String(text.prefix(analysisLimit)) : text
         let trimmed = head.trimmingCharacters(in: .whitespacesAndNewlines)
         let words = wordCount(in: trimmed)
         let lines = max(1, trimmed.components(separatedBy: .newlines).filter { !$0.isEmpty }.count)

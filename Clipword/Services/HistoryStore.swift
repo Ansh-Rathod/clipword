@@ -204,11 +204,16 @@ final class HistoryStore {
         guard !IgnoreRules.shouldIgnore(pasteboard: pasteboard, plainText: snapshot.plainText) else { return nil }
         guard IgnoreRules.shouldSave(snapshot: snapshot) else { return nil }
 
-        if let existing = findDuplicate(snapshot: snapshot) {
+        // Encode once and reuse for both the duplicate check and the stored
+        // blob — encoding a multi-MB snapshot twice per copy (base64 of the
+        // whole payload) stalled the main thread.
+        let data = snapshot.encode() ?? Data()
+
+        if let existing = findDuplicate(data: data, snapshot: snapshot) {
             existing.lastCopiedAt = .now
             existing.copyCount += 1
             try? modelContext.save()
-            reload()
+            refreshWithoutFetch()
             return existing
         }
 
@@ -219,7 +224,7 @@ final class HistoryStore {
         )
         let metrics = snapshot.plainText.map { TextAnalytics.metrics(for: $0) }
         let item = HistoryItem(
-            contentData: snapshot.encode() ?? Data(),
+            contentData: data,
             plainText: snapshot.plainText,
             contentType: snapshot.contentType,
             contentCategory: category,
@@ -234,9 +239,15 @@ final class HistoryStore {
         )
         modelContext.insert(item)
         try? modelContext.save()
-        prune()
+        let removed = prune()
         analyticsEngine?.recordCopy(item: item)
-        reload()
+        // No full `reload()` here: it re-fetches every row, re-materializing
+        // multi-MB blobs on the main thread (a copied 10MB text froze the app
+        // for ~2s per copy). Update the in-memory list instead.
+        items.removeAll { removed.contains($0) }
+        items.append(item)
+        refreshWithoutFetch()
+        scheduleCategoryBackfill()
 
         if snapshot.contentType == .image, let imageData = snapshot.imageData {
             Task {
@@ -268,22 +279,56 @@ final class HistoryStore {
         return String(head)
     }
 
-    private func findDuplicate(snapshot: PasteboardSnapshot) -> HistoryItem? {
-        guard let data = snapshot.encode() else { return nil }
-        return items.first { $0.contentData == data }
+    private func findDuplicate(data: Data, snapshot: PasteboardSnapshot) -> HistoryItem? {
+        // Fast path: byte-identical contentData. Stable since we encode with
+        // `.sortedKeys`; covers all newly captured items.
+        if let match = items.first(where: { $0.contentData == data }) {
+            return match
+        }
+        // Legacy fallback: pre-`.sortedKeys` contentData used a nondeterministic
+        // key order, so identical content had different bytes. Compare the
+        // stored columns directly (no blob decode).
+        return items.first { item in
+            item.contentType == snapshot.contentType
+                && item.plainText == snapshot.plainText
+                && item.pasteboardTypes == snapshot.pasteboardTypes
+                && item.imageData == snapshot.imageData
+        }
     }
 
-    func prune() {
+    /// Removes items beyond the history-size cap. Returns what was deleted so
+    /// callers can drop them from the in-memory list without a full re-fetch.
+    @discardableResult
+    func prune() -> [HistoryItem] {
         let limit = Defaults[.historySize]
         let removable = items
             .filter { !$0.isPinned }
             .sorted { $0.lastCopiedAt > $1.lastCopiedAt }
         if removable.count > limit {
-            for item in removable.dropFirst(limit) {
+            let removed = Array(removable.dropFirst(limit))
+            for item in removed {
                 modelContext.delete(item)
             }
             try? modelContext.save()
+            return removed
         }
+        return []
+    }
+
+    /// Re-sorts and re-filters the in-memory list after a write without touching
+    /// the store. Unlike `reload()`, this never re-materializes blob columns, so
+    /// it stays fast even when huge payloads are in the database.
+    private func refreshWithoutFetch() {
+        items.removeAll { $0.isDeleted }
+        switch Defaults[.sortOrder] {
+        case .lastCopied:
+            items.sort { $0.lastCopiedAt > $1.lastCopiedAt }
+        case .firstCopied:
+            items.sort { $0.firstCopiedAt > $1.firstCopiedAt }
+        case .copyCount:
+            items.sort { $0.copyCount > $1.copyCount }
+        }
+        applyFilters()
     }
 
     func select(_ item: HistoryItem, paste: Bool, withoutFormatting: Bool = false) {
@@ -302,7 +347,7 @@ final class HistoryStore {
         } else {
             try? modelContext.save()
         }
-        reload()
+        refreshWithoutFetch()
     }
 
     func updateContent(_ item: HistoryItem, content: String) {
@@ -319,13 +364,13 @@ final class HistoryStore {
         item.charCount = metrics.charCount
         item.readingTimeSeconds = metrics.readingTimeSeconds
         try? modelContext.save()
-        reload()
+        refreshWithoutFetch()
     }
 
     func togglePin(_ item: HistoryItem) {
         item.isPinned.toggle()
         try? modelContext.save()
-        reload()
+        refreshWithoutFetch()
     }
 
     func toggleBookmark(_ item: HistoryItem) {
@@ -338,7 +383,7 @@ final class HistoryStore {
         }
         try? modelContext.save()
         reloadBookmarks()
-        reload()
+        refreshWithoutFetch()
     }
 
     func isContentBookmarked(_ contentData: Data) -> Bool {
@@ -422,7 +467,7 @@ final class HistoryStore {
         try? modelContext.save()
         if selectedBookmarkID == item.id { selectedBookmarkID = nil }
         reloadBookmarks()
-        reload()
+        refreshWithoutFetch()
     }
 
     var bookmarkedItems: [HistoryItem] {
@@ -433,7 +478,7 @@ final class HistoryStore {
         modelContext.delete(item)
         try? modelContext.save()
         if selectedItemID == item.id { selectedItemID = nil }
-        reload()
+        refreshWithoutFetch()
     }
 
     func clear(unpinnedOnly: Bool) {
@@ -441,7 +486,7 @@ final class HistoryStore {
             modelContext.delete(item)
         }
         try? modelContext.save()
-        reload()
+        refreshWithoutFetch()
     }
 
     func addToPasteStack(_ item: HistoryItem) {

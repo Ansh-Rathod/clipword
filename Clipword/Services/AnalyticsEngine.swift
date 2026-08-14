@@ -31,7 +31,7 @@ final class AnalyticsEngine {
             return
         }
 
-        let head = text.count > Self.analyticsTokenLimit ? String(text.prefix(Self.analyticsTokenLimit)) : text
+        let head = text.utf16.count > Self.analyticsTokenLimit ? String(text.prefix(Self.analyticsTokenLimit)) : text
         let tokens = TextAnalytics.tokens(
             from: head,
             minLength: Defaults[.analyticsMinWordLength],

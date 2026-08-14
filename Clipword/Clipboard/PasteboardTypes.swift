@@ -102,7 +102,13 @@ struct PasteboardSnapshot: Codable {
     }
 
     func encode() -> Data? {
-        try? JSONEncoder().encode(self)
+        // `.sortedKeys` keeps contentData byte-stable: Swift's synthesized
+        // Codable otherwise emits struct keys in a nondeterministic order per
+        // encode, so identical content produced different blobs and duplicate
+        // detection (byte compare) silently failed, bloating the store.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try? encoder.encode(self)
     }
 
     static func decode(from data: Data) -> PasteboardSnapshot? {
