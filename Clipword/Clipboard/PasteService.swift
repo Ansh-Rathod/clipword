@@ -28,8 +28,10 @@ enum PasteService {
         // Delivery strategy:
         // - single-line plain text → typed keystroke injection (works in
         //   Chromium web content, Flutter, native apps; no clipboard churn)
-        // - multi-line text / rich content → synthetic ⌘V posted to the target
-        //   app's pid (typing newlines would trigger form submits/chat sends)
+        // - multi-line text / rich content → Edit→Paste menu press (access-
+        //   ibility), falling back to synthetic ⌘V pid-post when the target
+        //   has no Paste menu item (typing newlines would trigger form
+        //   submits / chat sends)
         let typeableText: String? = {
             guard let text = item?.plainText, isTypeable(text) else { return nil }
             return text
@@ -49,8 +51,10 @@ enum PasteService {
                 if let typeableText {
                     print("[Paste] typing \(typeableText.count) chars into pid \(target.processIdentifier) (\(name))")
                     injectText(typeableText, to: target.processIdentifier)
+                } else if pasteViaMenu(of: target) {
+                    print("[Paste] pasted via Edit→Paste menu of \(name)")
                 } else {
-                    print("[Paste] posting ⌘V to pid \(target.processIdentifier) (\(name))")
+                    print("[Paste] no Paste menu in \(name) — posting ⌘V to pid \(target.processIdentifier)")
                     postPasteKeyEvent(to: target.processIdentifier)
                 }
             }
@@ -59,11 +63,79 @@ enum PasteService {
             if let typeableText {
                 print("[Paste] typing \(typeableText.count) chars into current app pid \(front?.processIdentifier ?? 0) (\(front?.localizedName ?? "?"))")
                 injectText(typeableText, to: front?.processIdentifier)
+            } else if let front, pasteViaMenu(of: front) {
+                print("[Paste] pasted via Edit→Paste menu of \(front.localizedName ?? "?")")
             } else {
                 print("[Paste] posting ⌘V to current app pid \(front?.processIdentifier ?? 0) (\(front?.localizedName ?? "?"))")
                 postPasteKeyEvent(to: nil)
             }
         }
+    }
+
+    /// Pastes by AX-pressing the target app's Edit→Paste menu item. This
+    /// goes through the real menu action path and works everywhere synthetic
+    /// ⌘V key events fail — including Chromium *web content* (email fields
+    /// etc. drop synthetic ⌘-modified keyDowns but honor the menu action).
+    /// Requires the app to be frontmost (we open its menu bar).
+    /// Returns false when no Edit→Paste item exists (caller falls back to ⌘V).
+    private static func pasteViaMenu(of app: NSRunningApplication) -> Bool {
+        let appEl = AXUIElementCreateApplication(app.processIdentifier)
+
+        var menubarRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appEl, kAXMenuBarAttribute as CFString, &menubarRef) == .success,
+              let menubar = menubarRef as! AXUIElement? else { return false }
+
+        var editItem: AXUIElement?
+        var menusRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(menubar, kAXChildrenAttribute as CFString, &menusRef)
+        for menu in (menusRef as? [AXUIElement]) ?? [] {
+            var titleRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(menu, kAXTitleAttribute as CFString, &titleRef)
+            if titleRef as? String == "Edit" { editItem = menu; break }
+        }
+        guard let editItem else { return false }
+
+        // Opening the menu forces Chromium to materialize its item tree.
+        guard AXUIElementPerformAction(editItem, kAXPressAction as CFString) == .success else { return false }
+
+        var pasteMenuItem: AXUIElement?
+        let deadline = Date().addingTimeInterval(1.2)
+        while Date() < deadline && pasteMenuItem == nil {
+            pasteMenuItem = findMenuItemTitled("Paste", under: editItem)
+            if pasteMenuItem == nil { usleep(80_000) }
+        }
+        guard let pasteMenuItem else {
+            postEscapeKey(to: app.processIdentifier)
+            return false
+        }
+
+        let result = AXUIElementPerformAction(pasteMenuItem, kAXPressAction as CFString)
+        return result == .success
+    }
+
+    private static func findMenuItemTitled(_ title: String, under element: AXUIElement) -> AXUIElement? {
+        var roleRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
+        let role = roleRef as? String ?? "?"
+        if role == "AXMenuItem" {
+            var titleRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &titleRef)
+            if titleRef as? String == title { return element }
+        }
+        var kidsRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &kidsRef)
+        for kid in (kidsRef as? [AXUIElement]) ?? [] {
+            if let hit = findMenuItemTitled(title, under: kid) { return hit }
+        }
+        return nil
+    }
+
+    private static func postEscapeKey(to pid: pid_t) {
+        let down = CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: true)
+        down?.postToPid(pid)
+        usleep(30_000)
+        let up = CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: false)
+        up?.postToPid(pid)
     }
 
     private static func waitForFrontmost(_ app: NSRunningApplication, timeout: TimeInterval, then action: @escaping () -> Void) {
@@ -174,7 +246,13 @@ enum PasteService {
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            postPasteKeyEvent(to: targetPid)
+            var pasted = false
+            if let front = NSWorkspace.shared.frontmostApplication {
+                pasted = pasteViaMenu(of: front)
+            }
+            if !pasted {
+                postPasteKeyEvent(to: targetPid)
+            }
             // Restore what the user had on the clipboard before we borrowed it.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                 guard let saved, !saved.isEmpty else { return }
@@ -186,30 +264,19 @@ enum PasteService {
         }
     }
 
-    /// macOS virtual keycodes for characters, used only as a hint — the actual
-    /// character travels in the event's unicode string (keycode 0 otherwise).
-    private static let charKeycodes: [Character: CGKeyCode] = [
-        "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9,
-        "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17,
-        "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "9": 25, "7": 26,
-        "8": 28, "0": 29, "o": 31, "u": 32, "i": 34, "p": 35, "l": 37, "j": 38,
-        "k": 40, "n": 45, "m": 46, " ": 49,
-    ]
-
-    /// Types `text` as per-character keyDown/keyUp events posted directly to
-    /// the target app's pid, with the real character in the event's unicode
-    /// string. This is the only delivery path accepted by Chromium *web
-    /// content* (email fields etc.): synthetic ⌘-modified keyDowns — posted
-    /// via pid or the event stream — are dropped there, but plain keyDowns
-    /// are inserted (verified against Helium, Flutter/Sigil, Zed).
-    /// Must not contain newlines — see `isTypeable(_:)`.
+    /// Types `text` as keyDown/keyUp events posted directly to the target
+    /// app's pid, with the real text in the event's unicode string, chunked
+    /// at 20 UTF-16 units (espanso's proven chunk size — some apps truncate
+    /// longer unicode strings; ~3000 chars/s). This is the only delivery path
+    /// accepted by Chromium *web content* (email fields etc.): synthetic
+    /// ⌘-modified keyDowns — posted via pid or the event stream — are dropped
+    /// there, but plain keyDowns are inserted (verified against Helium,
+    /// Flutter/Sigil, Zed). Must not contain newlines — see `isTypeable(_:)`.
     private static func injectText(_ text: String, to targetPid: pid_t?) {
-        func post(_ virtualKey: CGKeyCode, _ down: Bool, characters: String) {
-            let event = CGEvent(keyboardEventSource: nil, virtualKey: virtualKey, keyDown: down)
-            if down {
-                var chars = Array(characters.utf16)
-                event?.keyboardSetUnicodeString(stringLength: chars.count, unicodeString: &chars)
-            }
+        func post(_ down: Bool, chunk: [UniChar]) {
+            let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down)
+            var chars = chunk
+            event?.keyboardSetUnicodeString(stringLength: chars.count, unicodeString: &chars)
             if let targetPid {
                 event?.postToPid(targetPid)
             } else {
@@ -217,12 +284,24 @@ enum PasteService {
             }
         }
 
-        for ch in text {
-            let virtualKey = charKeycodes[Character(ch.lowercased())] ?? 0
-            post(virtualKey, true, characters: String(ch))
-            usleep(1_500)
-            post(virtualKey, false, characters: String(ch))
-            usleep(1_500)
+        // 20 UTF-16 units per chunk (espanso uses the same limit).
+        var chunk: [UniChar] = []
+        for scalar in text.unicodeScalars {
+            let units = Array(String(scalar).utf16)
+            if chunk.count + units.count > 20 {
+                post(true, chunk: chunk)
+                usleep(2_000)
+                post(false, chunk: chunk)
+                usleep(3_000)
+                chunk = []
+            }
+            chunk.append(contentsOf: units)
+        }
+        if !chunk.isEmpty {
+            post(true, chunk: chunk)
+            usleep(2_000)
+            post(false, chunk: chunk)
+            usleep(3_000)
         }
     }
 
