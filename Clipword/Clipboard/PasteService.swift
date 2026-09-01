@@ -51,7 +51,7 @@ enum PasteService {
                 if let typeableText {
                     print("[Paste] typing \(typeableText.count) chars into pid \(target.processIdentifier) (\(name))")
                     injectText(typeableText, to: target.processIdentifier)
-                } else if pasteViaMenu(of: target) {
+                } else if !isFlutterBased(target), pasteViaMenu(of: target) {
                     print("[Paste] pasted via Edit→Paste menu of \(name)")
                 } else {
                     print("[Paste] no Paste menu in \(name) — posting ⌘V to pid \(target.processIdentifier)")
@@ -63,13 +63,25 @@ enum PasteService {
             if let typeableText {
                 print("[Paste] typing \(typeableText.count) chars into current app pid \(front?.processIdentifier ?? 0) (\(front?.localizedName ?? "?"))")
                 injectText(typeableText, to: front?.processIdentifier)
-            } else if let front, pasteViaMenu(of: front) {
+            } else if let front, !isFlutterBased(front), pasteViaMenu(of: front) {
                 print("[Paste] pasted via Edit→Paste menu of \(front.localizedName ?? "?")")
             } else {
                 print("[Paste] posting ⌘V to current app pid \(front?.processIdentifier ?? 0) (\(front?.localizedName ?? "?"))")
                 postPasteKeyEvent(to: nil)
             }
         }
+    }
+
+    /// Flutter apps ship FlutterMacOS.framework in their bundle. Their menu
+    /// bar has an Edit→Paste item (AppKit default template) but the action is
+    /// wired to NSText.paste: which Flutter's view doesn't respond to — AXPress
+    /// "succeeds" while nothing pastes (same Flutter/AppKit integration gap as
+    /// flutter#184571). Route those apps straight to the ⌘V pid-post instead.
+    private static func isFlutterBased(_ app: NSRunningApplication) -> Bool {
+        guard let bundleURL = app.bundleURL else { return false }
+        return FileManager.default.fileExists(
+            atPath: bundleURL.appendingPathComponent("Contents/Frameworks/FlutterMacOS.framework").path
+        )
     }
 
     /// Pastes by AX-pressing the target app's Edit→Paste menu item. This
@@ -247,7 +259,8 @@ enum PasteService {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             var pasted = false
-            if let front = NSWorkspace.shared.frontmostApplication {
+            if let front = NSWorkspace.shared.frontmostApplication,
+               !isFlutterBased(front) {
                 pasted = pasteViaMenu(of: front)
             }
             if !pasted {
