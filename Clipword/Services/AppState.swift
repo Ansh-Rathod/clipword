@@ -58,6 +58,8 @@ final class AppState {
         historyStore.setAnalyticsEngine(analyticsEngine)
         typingMonitor.configure(analyticsEngine: analyticsEngine)
         typingMonitor.syncWithPreference()
+        InlineSuggestionService.shared.configure(historyStore: historyStore)
+        InlineSuggestionService.shared.syncWithPreference()
 
         clipboardMonitor.onNewCopy = { [weak self] pasteboard in
             self?.historyStore.addFromPasteboard(pasteboard)
@@ -68,6 +70,16 @@ final class AppState {
 
     func toggleWindow(section: MainSection = .clipboard) {
         WindowManager.shared.toggleMainWindow(section: section)
+    }
+
+    /// ⌥Space snippet palette. Hidden main window stays untouched; the palette
+    /// floats near the cursor without activating Clipword, so the subsequent
+    /// auto-paste lands in the app the user was typing in.
+    func toggleSuggestionPalette() {
+        guard Defaults[.inlineSuggestionsEnabled] else { return }
+        // The palette owns keyboard input; any inline auto-suggestion must go.
+        InlineSuggestionService.shared.dismiss()
+        SuggestionPanelController.shared.toggle(appState: self)
     }
 
     func showWindow(section: MainSection = .clipboard) {

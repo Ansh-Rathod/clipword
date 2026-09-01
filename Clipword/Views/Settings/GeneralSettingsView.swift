@@ -1,17 +1,22 @@
 import KeyboardShortcuts
 import Defaults
 import SwiftUI
-
 extension KeyboardShortcuts.Name {
     static let openClipword = Self("openClipword", default: .init(.c, modifiers: [.command, .shift]))
-    static let pinItem = Self("pinItem", default: .init(.p, modifiers: [.option]))
-    static let bookmarkItem = Self("bookmarkItem", default: .init(.b, modifiers: [.option]))
-    static let deleteItem = Self("deleteItem", default: .init(.delete, modifiers: [.option]))
+    // ⚠️ No defaults for these: Carbon-registered global hotkeys *consume* the
+    // keystroke system-wide. ⌥⌫ broke "delete word" in every app; ⌥B/⌥P would
+    // break typing ∫/π. Users opt in via the recorders below.
+    static let pinItem = Self("pinItem")
+    static let bookmarkItem = Self("bookmarkItem")
+    static let deleteItem = Self("deleteItem")
+    /// Snippet suggestion palette. ⌥Space avoids Spotlight (⌘Space),
+    /// VS Code trigger-suggest (⌃Space) and the main window (⇧⌘C).
+    static let inlinePalette = Self("inlinePalette", default: .init(.space, modifiers: [.option]))
 }
 
 private enum GeneralFocus: Hashable {
-    case launchAtLogin, openShortcut, pinShortcut, bookmarkShortcut, deleteShortcut
-    case searchMode, pasteAuto, pastePlain
+    case launchAtLogin, openShortcut, inlineShortcut, pinShortcut, bookmarkShortcut, deleteShortcut
+    case searchMode, pasteAuto, pastePlain, inlineToggle, inlineTrigger, inlineMinChars
 }
 
 struct GeneralSettingsView: View {
@@ -19,6 +24,9 @@ struct GeneralSettingsView: View {
     @Default(.pasteWithoutFormatting) private var pasteWithoutFormatting
     @Default(.searchMode) private var searchMode
     @Default(.launchAtLogin) private var launchAtLogin
+    @Default(.inlineSuggestionsEnabled) private var inlineSuggestionsEnabled
+    @Default(.inlineMinChars) private var inlineMinChars
+    @Default(.inlineTriggerMode) private var inlineTriggerMode
     @Environment(\.arrowFocusExit) private var arrowFocusExit
     @Environment(\.arrowFocusEnterToken) private var enterToken
     @Environment(\.contentShouldTakeFocus) private var contentShouldTakeFocus
@@ -28,8 +36,8 @@ struct GeneralSettingsView: View {
     @FocusState private var focus: GeneralFocus?
 
     private let order: [GeneralFocus] = [
-        .launchAtLogin, .openShortcut, .pinShortcut, .bookmarkShortcut, .deleteShortcut,
-        .searchMode, .pasteAuto, .pastePlain
+        .launchAtLogin, .openShortcut, .inlineShortcut, .pinShortcut, .bookmarkShortcut, .deleteShortcut,
+        .searchMode, .pasteAuto, .pastePlain, .inlineToggle, .inlineTrigger, .inlineMinChars
     ]
 
     /// Scroll target that reveals the whole section containing `focus`: the last
@@ -38,9 +46,10 @@ struct GeneralSettingsView: View {
     private func sectionAnchor(for focus: GeneralFocus) -> GeneralFocus {
         switch focus {
         case .launchAtLogin: return .launchAtLogin
-        case .openShortcut, .pinShortcut, .bookmarkShortcut, .deleteShortcut: return .launchAtLogin
+        case .openShortcut, .inlineShortcut, .pinShortcut, .bookmarkShortcut, .deleteShortcut: return .launchAtLogin
         case .searchMode: return .deleteShortcut
         case .pasteAuto, .pastePlain: return .searchMode
+        case .inlineToggle, .inlineTrigger, .inlineMinChars: return .pastePlain
         }
     }
 
@@ -60,6 +69,11 @@ struct GeneralSettingsView: View {
                 }
                 .arrowFocus($focus, equals: .openShortcut)
                 .id(GeneralFocus.openShortcut)
+                LabeledContent("Snippet palette") {
+                    KeyboardShortcuts.Recorder(for: .inlinePalette)
+                }
+                .arrowFocus($focus, equals: .inlineShortcut)
+                .id(GeneralFocus.inlineShortcut)
                 LabeledContent("Pin item") {
                     KeyboardShortcuts.Recorder(for: .pinItem)
                 }
@@ -102,6 +116,28 @@ struct GeneralSettingsView: View {
                 Toggle("Paste without formatting by default", isOn: $pasteWithoutFormatting)
                     .arrowFocus($focus, equals: .pastePlain)
                     .id(GeneralFocus.pastePlain)
+            }
+            Section("Snippet Palette") {
+                Toggle("Enable snippet suggestions", isOn: $inlineSuggestionsEnabled)
+                    .arrowFocus($focus, equals: .inlineToggle)
+                    .id(GeneralFocus.inlineToggle)
+                Picker("Trigger", selection: $inlineTriggerMode) {
+                    ForEach(InlineTriggerMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .arrowFocus($focus, equals: .inlineTrigger)
+                .id(GeneralFocus.inlineTrigger)
+                .disabled(!inlineSuggestionsEnabled)
+                Stepper(value: $inlineMinChars, in: 1...4) {
+                    Text("Minimum characters: \(inlineMinChars)")
+                }
+                .arrowFocus($focus, equals: .inlineMinChars)
+                .id(GeneralFocus.inlineMinChars)
+                .disabled(!inlineSuggestionsEnabled)
+                Text("Type to filter copies, Tab or Return to paste")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -170,6 +206,19 @@ struct GeneralSettingsView: View {
             return .handled
         case .pastePlain:
             pasteWithoutFormatting.toggle()
+            return .handled
+        case .inlineToggle:
+            inlineSuggestionsEnabled.toggle()
+            return .handled
+        case .inlineTrigger:
+            KeyboardContextMenu.popChoices(
+                title: { $0.label },
+                current: inlineTriggerMode,
+                choices: InlineTriggerMode.allCases
+            ) { inlineTriggerMode = $0 }
+            return .handled
+        case .inlineMinChars:
+            inlineMinChars = inlineMinChars >= 4 ? 1 : inlineMinChars + 1
             return .handled
         default:
             return .ignored

@@ -131,26 +131,34 @@ final class WindowManager {
         panel?.orderOut(nil)
     }
 
+    /// Snippet palette (and other flows that don't show the main window)
+    /// registers the app the user came from so a simulated ⌘V targets it.
+    func setPasteTarget(_ app: NSRunningApplication?) {
+        previousApp = app
+    }
+
     /// Brings back the app that was frontmost before the popup opened, so a
     /// simulated ⌘V lands there instead of in Clipword. Only switches when
     /// Clipword itself is still frontmost (e.g. right after the panel closes);
     /// if the user already moved to another app, that app keeps focus.
+    /// Returns the app focus was handed to (nil = no switch happened).
     @discardableResult
-    func reactivatePreviousApp() -> Bool {
+    func reactivatePreviousApp() -> NSRunningApplication? {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier else {
-            return false
+            return nil
         }
         guard let previousApp,
               !previousApp.isTerminated,
               previousApp.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
-            return false
+            return nil
         }
-        previousApp.activate(options: [.activateAllWindows])
+        let target = previousApp
+        target.activate(options: [.activateAllWindows])
         // Handed focus to the source app; drop the reference so a later paste
         // can't target a stale app. (Kept across hide, because the panel hides
         // before the deferred ⌘V fires.)
         self.previousApp = nil
-        return true
+        return target
     }
 
     func handlePanelClosed() {

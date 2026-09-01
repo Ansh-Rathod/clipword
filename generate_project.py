@@ -282,6 +282,7 @@ for cid, name, is_proj in [
         w("\t\t\t\tCOMBINE_HIDPI_IMAGES = YES;")
         w("\t\t\t\tCURRENT_PROJECT_VERSION = 1;")
         w("\t\t\t\tDEVELOPMENT_TEAM = \"\";")
+        w("\t\t\t\tENABLE_DEBUG_DYLIB = NO;")
         w("\t\t\t\tENABLE_HARDENED_RUNTIME = YES;")
         w("\t\t\t\tGENERATE_INFOPLIST_FILE = NO;")
         w("\t\t\t\tINFOPLIST_FILE = Clipword/Resources/Info.plist;")

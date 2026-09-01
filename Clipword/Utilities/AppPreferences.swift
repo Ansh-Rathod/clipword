@@ -169,4 +169,34 @@ extension Defaults.Keys {
     /// Legacy category migration ran at least once on this install (persisted so
     /// launch never re-decodes every item's blob).
     static let didBackfillCategories = Key<Bool>("didBackfillCategories", default: false)
+
+    // MARK: Inline snippet suggestions (Phase A: hotkey palette)
+
+    /// Master switch for the snippet suggestion palette (⌥Space by default).
+    static let inlineSuggestionsEnabled = Key<Bool>("inlineSuggestionsEnabled", default: false)
+    /// Minimum typed characters before prefix suggestions kick in.
+    static let inlineMinChars = Key<Int>("inlineMinChars", default: 2)
+    /// Items longer than this are never suggested (avoids multi-MB noise).
+    static let inlineMaxLength = Key<Int>("inlineMaxLength", default: 500)
+    /// Maximum rows shown in the palette.
+    static let inlineMaxSuggestions = Key<Int>("inlineMaxSuggestions", default: 6)
+    /// Debounce between keystroke and suggestion refresh (auto mode).
+    static let inlineDebounceMs = Key<Double>("inlineDebounceMs", default: 80)
+    /// Auto (as you type, needs caret) vs hotkey-only palette.
+    static let inlineTriggerMode = Key<InlineTriggerMode>("inlineTriggerMode", default: .hotkey)
+    /// Migration flags
+    static let didRemoveLegacyOptionHotkeys = Key<Bool>("didRemoveLegacyOptionHotkeys", default: false)
+}
+
+enum InlineTriggerMode: String, CaseIterable, Defaults.Serializable, Identifiable {
+    case auto, hotkey
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .auto: "As you type"
+        case .hotkey: "Hotkey only"
+        }
+    }
 }
