@@ -342,7 +342,7 @@ final class HistoryStore {
             try? modelContext.save()
             analyticsEngine?.recordPaste(item: item)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                PasteService.paste()
+                PasteService.paste(item: item)
             }
         } else {
             try? modelContext.save()
