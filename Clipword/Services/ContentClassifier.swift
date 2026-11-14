@@ -82,6 +82,31 @@ enum ContentClassifier {
         types.contains { $0 == "public.url" || ($0.contains("url") && $0.contains("public")) }
     }
 
+    /// http(s) URL suitable for fetching a link preview, if the clip is a link.
+    static func previewableURL(from text: String?) -> URL? {
+        guard let text = classifyHead(text) else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let url = URL(string: trimmed), isPreviewable(url) {
+            return url
+        }
+
+        if let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) {
+            let range = NSRange(trimmed.startIndex..., in: trimmed)
+            if let match = detector.firstMatch(in: trimmed, options: [], range: range),
+               let url = match.url, isPreviewable(url) {
+                return url
+            }
+        }
+        return nil
+    }
+
+    private static func isPreviewable(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) else { return false }
+        return url.host != nil
+    }
+
     private static func isLinkText(_ text: String?) -> Bool {
         guard let text = classifyHead(text) else { return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)

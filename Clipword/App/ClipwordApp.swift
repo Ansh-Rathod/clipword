@@ -14,7 +14,12 @@ struct ClipwordApp: App {
             EmptyView()
         }
         .commands {
-            CommandGroup(replacing: .appSettings) {}
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    appDelegate.appState?.showSettings()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
         }
     }
 }
@@ -23,13 +28,12 @@ struct ClipwordApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var modelContainer: ModelContainer!
     private(set) var historyStore: HistoryStore!
-    private(set) var analyticsEngine: AnalyticsEngine!
     private(set) var appState: AppState!
     private let statusBarController = StatusBarController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        print("[Clipword] launched pid \(ProcessInfo.processInfo.processIdentifier), inlineSuggestions=\(Defaults[.inlineSuggestionsEnabled]), trigger=\(Defaults[.inlineTriggerMode].rawValue)")
+        print("[Clipword] launched pid \(ProcessInfo.processInfo.processIdentifier)")
         migrateDefaultsIfNeeded()
 
         let schema = Schema([
@@ -49,13 +53,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         modelContainer = container
 
         let store = HistoryStore(modelContext: container.mainContext)
-        let analytics = AnalyticsEngine(modelContext: container.mainContext)
-        let state = AppState(historyStore: store, analyticsEngine: analytics)
+        let state = AppState(historyStore: store)
         historyStore = store
-        analyticsEngine = analytics
         appState = state
 
-        WindowManager.shared.configure(historyStore: store, analyticsEngine: analytics, appState: state)
+        WindowManager.shared.configure(historyStore: store, appState: state)
         statusBarController.install(appState: state)
         registerHotkeys()
     }
@@ -108,12 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func registerHotkeys() {
         KeyboardShortcuts.onKeyUp(for: .openClipword) { [weak self] in
             Task { @MainActor in
-                self?.appState?.toggleWindow(section: .clipboard)
-            }
-        }
-        KeyboardShortcuts.onKeyUp(for: .inlinePalette) { [weak self] in
-            Task { @MainActor in
-                self?.appState?.toggleSuggestionPalette()
+                self?.appState?.toggleWindow()
             }
         }
         KeyboardShortcuts.onKeyUp(for: .pinItem) { [weak self] in

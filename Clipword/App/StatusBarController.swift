@@ -1,5 +1,4 @@
 import AppKit
-import Defaults
 import SwiftUI
 
 @MainActor
@@ -9,6 +8,9 @@ final class StatusBarController: NSObject {
     /// Accessory apps often receive the waking click twice. The second one
     /// toggles the window shut, so the first menu-bar click looks ignored.
     private var lastLeftClick = Date.distantPast
+    /// Item actions run inside the menu's tracking loop. Showing a panel there
+    /// is discarded when the menu closes, so the action is stored and run after.
+    private var pendingMenuAction: ((AppState) -> Void)?
 
     func install(appState: AppState) {
         self.appState = appState
@@ -36,7 +38,8 @@ final class StatusBarController: NSObject {
         let now = Date()
         if now.timeIntervalSince(lastLeftClick) < 0.3 { return }
         lastLeftClick = now
-        appState?.toggleWindow(section: .clipboard, fromStatusItem: true)
+        // Same toggle as the global shortcut, including where the panel opens.
+        appState?.toggleWindow()
     }
 
     private func showContextMenu() {
@@ -45,6 +48,16 @@ final class StatusBarController: NSObject {
         statusItem?.menu = menu
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 2), in: button)
         statusItem?.menu = nil
+
+        let action = pendingMenuAction
+        pendingMenuAction = nil
+        guard let action else { return }
+        // Tracking has ended. Present on the next turn so the menu's resign
+        // is already done, then use the same path as the global shortcut.
+        DispatchQueue.main.async { [weak self] in
+            guard let appState = self?.appState else { return }
+            action(appState)
+        }
     }
 
     private func buildMenu() -> NSMenu {
@@ -53,30 +66,8 @@ final class StatusBarController: NSObject {
 
         menu.addItem(item("Clipboard", action: #selector(openClipboard), image: "doc.on.clipboard"))
         menu.addItem(item("Bookmarks", action: #selector(openBookmarks), image: "bookmark"))
-        menu.addItem(item("Analytics", action: #selector(openAnalytics), image: "chart.bar"))
         menu.addItem(.separator())
-
-        let settings = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
-        let settingsMenu = NSMenu()
-        settingsMenu.autoenablesItems = false
-        settingsMenu.addItem(item("General", action: #selector(openGeneral), image: "gear"))
-        settingsMenu.addItem(item("Storage", action: #selector(openStorage), image: "internaldrive"))
-        settingsMenu.addItem(item("Ignore", action: #selector(openIgnore), image: "eye.slash"))
-        settingsMenu.addItem(item("Advanced", action: #selector(openAdvanced), image: "wrench.and.screwdriver"))
-        settings.submenu = settingsMenu
-        menu.addItem(settings)
-
-        menu.addItem(.separator())
-
-        let paused = Defaults[.ignoreEvents]
-        let pauseItem = NSMenuItem(
-            title: paused ? "Resume Monitoring" : "Pause Monitoring",
-            action: #selector(togglePause),
-            keyEquivalent: ""
-        )
-        pauseItem.target = self
-        menu.addItem(pauseItem)
-
+        menu.addItem(item("Settings…", action: #selector(openSettings), image: "gear"))
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(title: "Quit Clipword", action: #selector(quit), keyEquivalent: "q")
@@ -93,17 +84,9 @@ final class StatusBarController: NSObject {
         return menuItem
     }
 
-    @objc func openClipboard() { appState?.showWindow(section: .clipboard) }
-    @objc func openBookmarks() { appState?.showWindow(section: .bookmarks) }
-    @objc func openAnalytics() { appState?.showWindow(section: .analytics) }
-    @objc func openGeneral() { appState?.showWindow(section: .general) }
-    @objc func openStorage() { appState?.showWindow(section: .storage) }
-    @objc func openIgnore() { appState?.showWindow(section: .ignore) }
-    @objc func openAdvanced() { appState?.showWindow(section: .advanced) }
-
-    @objc func togglePause() {
-        Defaults[.ignoreEvents].toggle()
-    }
+    @objc func openClipboard() { pendingMenuAction = { $0.showWindow(source: .history) } }
+    @objc func openBookmarks() { pendingMenuAction = { $0.showWindow(source: .bookmarks) } }
+    @objc func openSettings() { pendingMenuAction = { $0.showSettings(section: .general) } }
 
     @objc func quit() {
         NSApp.terminate(nil)

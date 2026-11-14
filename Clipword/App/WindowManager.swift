@@ -7,17 +7,20 @@ private final class KeyablePanel: NSPanel {
     override var canBecomeMain: Bool { true }
 }
 
-/// Single floating menu-bar popup. Never activates Dock (.accessory stays).
+/// Floating Raycast-style palette plus a separate mouse-driven settings window.
+/// Never activates Dock (.accessory stays).
 @MainActor
 final class WindowManager {
     static let shared = WindowManager()
-    static let windowSize = NSSize(width: 900, height: 600)
-    static let cornerRadius: CGFloat = 16
+    static let windowSize = NSSize(width: 720, height: 520)
+    static let settingsWindowSize = NSSize(width: 820, height: 580)
+    static let cornerRadius: CGFloat = LiquidGlassMetrics.panelRadius
 
     private var panel: KeyablePanel?
     private var hosting: NSHostingView<AnyView>?
+    fileprivate var settingsWindow: NSWindow?
+    private var settingsHosting: NSHostingView<AnyView>?
     private weak var historyStore: HistoryStore?
-    private weak var analyticsEngine: AnalyticsEngine?
     private weak var appState: AppState?
     private weak var statusButton: NSStatusBarButton?
     private var resignObserver: NSObjectProtocol?
@@ -37,9 +40,8 @@ final class WindowManager {
     /// "activation hasn't landed yet" from "the user already switched away".
     private var activationLanded = false
 
-    func configure(historyStore: HistoryStore, analyticsEngine: AnalyticsEngine, appState: AppState) {
+    func configure(historyStore: HistoryStore, appState: AppState) {
         self.historyStore = historyStore
-        self.analyticsEngine = analyticsEngine
         self.appState = appState
         if resignObserver == nil {
             resignObserver = NotificationCenter.default.addObserver(
@@ -73,40 +75,41 @@ final class WindowManager {
         panel?.isVisible == true
     }
 
-    func toggleMainWindow(section: MainSection = .clipboard, fromStatusItem: Bool = false) {
-        if isVisible, appState?.mainSection == section {
+    var isSettingsVisible: Bool {
+        settingsWindow?.isVisible == true
+    }
+
+    func toggleMainWindow(source: PaletteSource? = nil, fromStatusItem: Bool = false) {
+        if isVisible {
+            if let source, appState?.paletteSource != source {
+                appState?.paletteSource = source
+                return
+            }
             hideMainWindow()
             return
         }
-        if isVisible {
-            appState?.mainSection = section
-            return
-        }
-        showMainWindow(section: section, fromStatusItem: fromStatusItem)
+        showMainWindow(source: source, fromStatusItem: fromStatusItem)
     }
 
-    func showMainWindow(section: MainSection = .clipboard, fromStatusItem: Bool = false) {
+    func showMainWindow(source: PaletteSource? = nil, fromStatusItem: Bool = false) {
         // Stay menu-bar only — never flip to .regular (avoids Dock icon).
         NSApp.setActivationPolicy(.accessory)
-        appState?.mainSection = section
+        if let source {
+            appState?.paletteSource = source
+        }
 
-        guard let historyStore, let analyticsEngine, let appState else { return }
+        guard let historyStore, let appState else { return }
 
         if panel == nil {
             let root = AnyView(
                 MainRootView()
                     .environment(historyStore)
-                    .environment(analyticsEngine)
                     .environment(appState)
                     .environment(appState.searchService)
                     .ignoresSafeArea()
             )
-            let hosting = NSHostingView(rootView: root)
+            let hosting = TransparentHostingView(rootView: root)
             hosting.frame = NSRect(origin: .zero, size: Self.windowSize)
-            hosting.wantsLayer = true
-            hosting.layer?.cornerRadius = Self.cornerRadius
-            hosting.layer?.cornerCurve = .continuous
-            hosting.layer?.masksToBounds = true
 
             let panel = KeyablePanel(
                 contentRect: hosting.frame,
@@ -127,7 +130,7 @@ final class WindowManager {
             panel.hidesOnDeactivate = false
             panel.isReleasedWhenClosed = false
             panel.becomesKeyOnlyIfNeeded = false
-            panel.contentView = hosting
+            panel.contentView = LiquidGlass.embed(hosting, cornerRadius: Self.cornerRadius)
             panel.delegate = PanelDelegate.shared
             PanelDelegate.shared.manager = self
 
@@ -195,6 +198,53 @@ final class WindowManager {
         panel?.orderOut(nil)
     }
 
+    func showSettingsWindow(section: SettingsSection = .general) {
+        NSApp.setActivationPolicy(.accessory)
+        appState?.settingsSection = section
+        hideMainWindow()
+
+        guard let historyStore, let appState else { return }
+
+        if settingsWindow == nil {
+            let root = AnyView(
+                SettingsRootView()
+                    .environment(historyStore)
+                    .environment(appState)
+                    .environment(appState.searchService)
+            )
+            let hosting = NSHostingView(rootView: root)
+            hosting.frame = NSRect(origin: .zero, size: Self.settingsWindowSize)
+
+            let window = NSWindow(
+                contentRect: hosting.frame,
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "Settings"
+            window.isReleasedWhenClosed = false
+            window.hidesOnDeactivate = false
+            window.level = NSWindow.Level.normal
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            window.contentView = hosting
+            window.delegate = SettingsWindowDelegate.shared
+            SettingsWindowDelegate.shared.manager = self
+            window.setContentSize(Self.settingsWindowSize)
+            window.center()
+
+            settingsWindow = window
+            settingsHosting = hosting
+        }
+
+        guard let settingsWindow else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow.makeKeyAndOrderFront(nil)
+    }
+
+    func handleSettingsClosed() {
+        settingsWindow?.orderOut(nil)
+    }
+
     /// Resign notifications that are part of coming forward, not the user leaving.
     func hideBecauseFocusLeft() {
         guard wantsMainWindow, !suppressFocusLossHide else { return }
@@ -224,12 +274,6 @@ final class WindowManager {
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
-    }
-
-    /// Snippet palette (and other flows that don't show the main window)
-    /// registers the app the user came from so a simulated ⌘V targets it.
-    func setPasteTarget(_ app: NSRunningApplication?) {
-        previousApp = app
     }
 
     /// Brings back the app that was frontmost before the popup opened, so a
@@ -273,12 +317,7 @@ final class WindowManager {
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
-        if let content = window.contentView {
-            content.wantsLayer = true
-            content.layer?.cornerRadius = Self.cornerRadius
-            content.layer?.cornerCurve = .continuous
-            content.layer?.masksToBounds = true
-        }
+        LiquidGlass.applyWindowShape(window.contentView, cornerRadius: Self.cornerRadius)
     }
 
     private func positionPanel(_ panel: NSPanel, fromStatusItem: Bool) {
@@ -385,7 +424,11 @@ private final class PanelDelegate: NSObject, NSWindowDelegate {
             if window.attachedSheet != nil { return }
             if let key = NSApp.keyWindow, key.sheetParent === window { return }
             // Stay open for in-app menus/popovers (pickers, context menus).
-            // Close only when focus left the app (outside click, Raycast, etc.).
+            // Close when the settings window takes key, or when focus left the app.
+            if let settings = self?.manager?.settingsWindow, settings.isKeyWindow {
+                self?.manager?.hideMainWindow()
+                return
+            }
             guard !NSApp.isActive else { return }
             self?.manager?.hideBecauseFocusLeft()
         }
@@ -401,5 +444,16 @@ private final class PanelDelegate: NSObject, NSWindowDelegate {
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
+    }
+}
+
+@MainActor
+private final class SettingsWindowDelegate: NSObject, NSWindowDelegate {
+    static let shared = SettingsWindowDelegate()
+    weak var manager: WindowManager?
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        manager?.handleSettingsClosed()
+        return false
     }
 }

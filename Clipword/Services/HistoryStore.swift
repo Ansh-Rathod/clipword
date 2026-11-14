@@ -25,7 +25,6 @@ final class HistoryStore {
     var activeCategory: ClipboardCategory?
     var activeAppBundleId: String?
 
-    private var analyticsEngine: AnalyticsEngine?
     private(set) var lastAction: HistoryActionEvent?
     private var actionToken = 0
 
@@ -38,7 +37,7 @@ final class HistoryStore {
     /// store is drained, so this is a batch size, not a cap.
     private static let retentionPruneBatchSize = 1000
 
-    /// Caps the per-entry copy/paste log so a hot snippet can't grow forever.
+    /// Caps the per-entry copy/paste log so a hot item can't grow forever.
     private static let maxEventsPerItem = 200
 
     private var retentionTimer: Timer?
@@ -50,10 +49,6 @@ final class HistoryStore {
         reloadBookmarks()
         reloadFolders()
         scheduleRetentionPrune()
-    }
-
-    func setAnalyticsEngine(_ engine: AnalyticsEngine) {
-        analyticsEngine = engine
     }
 
     func reload() {
@@ -231,7 +226,6 @@ final class HistoryStore {
             existing.copyCount += 1
             recordEvent(.copied, on: existing)
             try? modelContext.save()
-            analyticsEngine?.recordCopy(item: existing)
             refreshWithoutFetch()
             return existing
         }
@@ -260,7 +254,6 @@ final class HistoryStore {
         recordEvent(.copied, on: item)
         try? modelContext.save()
         let removed = prune()
-        analyticsEngine?.recordCopy(item: item)
         // No full `reload()` here: it re-fetches every row, re-materializing
         // multi-MB blobs on the main thread (a copied 10MB text froze the app
         // for ~2s per copy). Update the in-memory list instead.
@@ -280,7 +273,6 @@ final class HistoryStore {
                     item.charCount = metrics.charCount
                     item.readingTimeSeconds = metrics.readingTimeSeconds
                     try? modelContext.save()
-                    analyticsEngine?.recordCopy(item: item)
                     reload()
                 }
             }
@@ -372,7 +364,6 @@ final class HistoryStore {
             item.lastPastedAt = .now
             recordEvent(.pasted, on: item)
             try? modelContext.save()
-            analyticsEngine?.recordPaste(item: item)
             publishAction(.pasted, itemID: item.id)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 PasteService.paste(item: item)

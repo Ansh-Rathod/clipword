@@ -175,7 +175,7 @@ struct BookmarksView: View {
                 }
             }
         }
-        .background(.background)
+        .clipwordPanelBackground()
         .sheet(item: $editingItem) { item in
             EditBookmarkSheet(item: item)
         }
@@ -250,6 +250,7 @@ struct BookmarksView: View {
     }
 
     private var toolbar: some View {
+        LiquidGlassGroup(spacing: 12) {
         HStack(spacing: 12) {
             KeyboardMenuPicker(
                 selection: $activeCategory,
@@ -281,9 +282,13 @@ struct BookmarksView: View {
                         .textFieldStyle(.plain)
                         .focused($searchFieldActive)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                .padding(.horizontal, LiquidGlassMetrics.pillPaddingH)
+                .padding(.vertical, LiquidGlassMetrics.pillPaddingV)
+                .liquidGlass(
+                    .interactive,
+                    in: Capsule(),
+                    fallback: Color.primary.opacity(0.10)
+                )
                 .focusable(!searchFieldActive)
                 .focused($focus, equals: .search)
                 .modifier(ArrowFocusRingModifier(forced: focus == .search && !searchFieldActive))
@@ -296,10 +301,17 @@ struct BookmarksView: View {
             } label: {
                 Label("New Folder", systemImage: "folder.badge.plus")
                     .labelStyle(.iconOnly)
+                    .frame(width: LiquidGlassMetrics.iconButtonSize, height: LiquidGlassMetrics.iconButtonSize)
+                    .contentShape(RoundedRectangle(cornerRadius: LiquidGlassMetrics.iconRadius, style: .continuous))
             }
             .buttonStyle(.borderless)
-            .help("New Folder")
+            .liquidGlass(
+                .interactive,
+                in: RoundedRectangle(cornerRadius: LiquidGlassMetrics.iconRadius, style: .continuous),
+                fallback: Color.primary.opacity(0.10)
+            )
             .arrowFocus($focus, equals: .newFolder)
+        }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -348,6 +360,7 @@ struct BookmarksView: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+        .background(.clear)
         .arrowListFocus($focus, equals: .list)
         .scrollToVisible(target: listScrollTarget)
         .onDeleteCommand { deleteSelectedItem() }
@@ -358,7 +371,6 @@ struct BookmarksView: View {
         if let item = selectedItem {
             BookmarkDetailPane(
                 item: item,
-                focus: $focus,
                 onEdit: { editingItem = item },
                 onMoveFolder: { showFolderMenu(for: item) }
             )
@@ -708,21 +720,35 @@ struct BookmarkRowView: View {
 }
 
 struct BookmarkDetailPane: View {
+    @Environment(AppState.self) private var appState
     @Environment(HistoryStore.self) private var historyStore
     let item: BookmarkItem
-    var focus: FocusState<BookmarkFocus?>.Binding
     var onEdit: () -> Void = {}
     var onMoveFolder: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 0) {
             contentPreview
-                .frame(maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
 
             Divider()
 
-            informationSection
-                .padding(20)
+            ScrollView {
+                informationSection
+                    .padding(20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .persistScrollOffset(
+                store: appState.scrollStore,
+                key: PaletteScrollKey.info(item.id),
+                restoreToken: appState.windowPresentationToken
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // actionButtons
+            //     .padding(.horizontal, 20)
+            //     .padding(.bottom, 16)
+            //     .padding(.top, 8)
         }
     }
 
@@ -732,8 +758,29 @@ struct BookmarkDetailPane: View {
             ScrollView {
                 DetailImagePreview(id: item.id, data: data)
             }
+            .persistScrollOffset(
+                store: appState.scrollStore,
+                key: PaletteScrollKey.preview(item.id),
+                restoreToken: appState.windowPresentationToken
+            )
+        } else if item.category == .link,
+                  let url = ContentClassifier.previewableURL(from: item.plainText) {
+            LinkPreviewCard(
+                url: url,
+                fallbackText: item.plainText ?? url.absoluteString,
+                charCount: item.charCount,
+                scrollStore: appState.scrollStore,
+                scrollKey: PaletteScrollKey.preview(item.id),
+                restoreToken: appState.windowPresentationToken
+            )
         } else if let text = item.plainText, !text.isEmpty {
-            TextPreviewPane(text: text, charCount: item.charCount)
+            TextPreviewPane(
+                text: text,
+                charCount: item.charCount,
+                scrollStore: appState.scrollStore,
+                scrollKey: PaletteScrollKey.preview(item.id),
+                restoreToken: appState.windowPresentationToken
+            )
         } else {
             ScrollView {
                 Text(item.displayTitle)
@@ -742,6 +789,11 @@ struct BookmarkDetailPane: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(20)
             }
+            .persistScrollOffset(
+                store: appState.scrollStore,
+                key: PaletteScrollKey.preview(item.id),
+                restoreToken: appState.windowPresentationToken
+            )
         }
     }
 
@@ -760,6 +812,19 @@ struct BookmarkDetailPane: View {
             infoRow("Content type") {
                 Text(contentTypeLabel)
             }
+            if item.category == .link,
+               let url = ContentClassifier.previewableURL(from: item.plainText) {
+                infoRow("Address") {
+                    Button(url.absoluteString) {
+                        NSWorkspace.shared.open(url)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.tint)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .help("Open in Browser")
+                }
+            }
             infoRow("Characters") {
                 Text("\(item.charCount)")
             }
@@ -775,25 +840,31 @@ struct BookmarkDetailPane: View {
             infoRow("Copied") {
                 Text(dateLabel(for: item.sourceCopiedAt))
             }
-
-            HStack(spacing: 12) {
-                Button("Edit…", action: onEdit)
-                    .buttonStyle(.borderless)
-                    .arrowFocus(focus, equals: .edit)
-                Button("Move to Folder…", action: onMoveFolder)
-                    .buttonStyle(.borderless)
-                    .arrowFocus(focus, equals: .moveFolder)
-                Button("Remove Bookmark", role: .destructive) {
-                    historyStore.deleteBookmark(item)
-                }
-                .buttonStyle(.borderless)
-                .arrowFocus(focus, equals: .remove)
-                Spacer()
-            }
-            .padding(.top, 4)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    /*
+    private var actionButtons: some View {
+        LiquidGlassGroup(spacing: 8) {
+            HStack(spacing: 8) {
+                DetailIconButton(systemName: "doc.on.doc", help: "Copy") {
+                    historyStore.selectBookmark(item, paste: false)
+                }
+                DetailIconButton(systemName: "text.insert", help: "Paste into focused field") {
+                    historyStore.selectBookmark(item, paste: true)
+                    appState.hideWindow()
+                }
+                DetailIconButton(systemName: "pencil", help: "Edit", action: onEdit)
+                DetailIconButton(systemName: "folder", help: "Move to Folder", action: onMoveFolder)
+                DetailIconButton(systemName: "bookmark.slash", help: "Remove Bookmark") {
+                    historyStore.deleteBookmark(item)
+                }
+                Spacer()
+            }
+        }
+    }
+    */
 
     private func infoRow<Content: View>(_ label: String, @ViewBuilder value: () -> Content) -> some View {
         HStack(alignment: .firstTextBaseline) {
@@ -807,6 +878,7 @@ struct BookmarkDetailPane: View {
     }
 
     private var contentTypeLabel: String {
+        if item.category == .link { return "Link" }
         switch item.contentType {
         case .text: return item.category == .styledText ? "Text (Formatted)" : "Text"
         case .rtf: return "Text (Formatted)"

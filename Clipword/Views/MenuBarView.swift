@@ -1,5 +1,4 @@
 import AppKit
-import Defaults
 import SwiftUI
 
 struct MenuBarView: View {
@@ -9,13 +8,9 @@ struct MenuBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button("Open Clipword") {
-                appState.showWindow(section: .clipboard)
+                appState.showWindow()
             }
             .keyboardShortcut("c", modifiers: [.command, .shift])
-
-            Button("Analytics…") {
-                appState.showWindow(section: .analytics)
-            }
 
             Divider()
 
@@ -34,17 +29,9 @@ struct MenuBarView: View {
             Divider()
 
             Button("Settings…") {
-                appState.showWindow(section: .general)
+                appState.showSettings()
             }
             .keyboardShortcut(",", modifiers: .command)
-
-            Button("Pause Monitoring") {
-                Defaults[.ignoreEvents].toggle()
-            }
-
-            Button("Ignore Next Copy") {
-                Defaults[.ignoreNextEvent] = true
-            }
 
             Divider()
 

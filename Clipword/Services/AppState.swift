@@ -34,32 +34,76 @@ final class ClipboardMonitor {
     }
 }
 
+enum PaletteSource: String, CaseIterable, Identifiable, Hashable {
+    case history, bookmarks
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .history: "Recent"
+        case .bookmarks: "Bookmarks"
+        }
+    }
+}
+
+enum PaletteSelection: Hashable {
+    case history(UUID)
+    case bookmark(UUID)
+    case folder(UUID)
+}
+
+enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
+    case general, storage, ignore, advanced
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .storage: "Storage"
+        case .ignore: "Ignore"
+        case .advanced: "Advanced"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .general: "gear"
+        case .storage: "internaldrive"
+        case .ignore: "eye.slash"
+        case .advanced: "wrench.and.screwdriver"
+        }
+    }
+
+    static let settings: [SettingsSection] = [.general, .storage, .ignore, .advanced]
+}
+
 @Observable
 @MainActor
 final class AppState {
     let historyStore: HistoryStore
-    let analyticsEngine: AnalyticsEngine
     let searchService = SearchService()
     let clipboardMonitor = ClipboardMonitor()
-    let typingMonitor = TypingMonitor()
 
-    var mainSection: MainSection = .clipboard
+    var paletteSource: PaletteSource = .history
+    var paletteSelection: PaletteSelection?
+    /// Folders the user collapsed in Bookmarks. Kept across hide/show.
+    var collapsedFolderIDs: Set<UUID> = []
+    /// Pixel offsets for the palette list and preview panes. Survives focus loss.
+    let scrollStore = PaletteScrollStore()
+    var settingsSection: SettingsSection = .general
     var cycleIndex = 0
     var isCycling = false
     var isSearchFocused = false
     var searchFocusToken = 0
-    /// Bumped every time the main window is shown (reset sidebar / list selection).
+    /// Bumped every time the main window is shown so search can take keyboard
+    /// focus again without wiping scroll, source, or selection.
     var windowPresentationToken = 0
     private var pasteStackMonitor: Any?
 
-    init(historyStore: HistoryStore, analyticsEngine: AnalyticsEngine) {
+    init(historyStore: HistoryStore) {
         self.historyStore = historyStore
-        self.analyticsEngine = analyticsEngine
-        historyStore.setAnalyticsEngine(analyticsEngine)
-        typingMonitor.configure(analyticsEngine: analyticsEngine)
-        typingMonitor.syncWithPreference()
-        InlineSuggestionService.shared.configure(historyStore: historyStore)
-        InlineSuggestionService.shared.syncWithPreference()
 
         clipboardMonitor.onNewCopy = { [weak self] pasteboard in
             self?.historyStore.addFromPasteboard(pasteboard)
@@ -68,26 +112,20 @@ final class AppState {
         registerPasteStackMonitor()
     }
 
-    func toggleWindow(section: MainSection = .clipboard, fromStatusItem: Bool = false) {
-        WindowManager.shared.toggleMainWindow(section: section, fromStatusItem: fromStatusItem)
+    func toggleWindow(source: PaletteSource? = nil, fromStatusItem: Bool = false) {
+        WindowManager.shared.toggleMainWindow(source: source, fromStatusItem: fromStatusItem)
     }
 
-    /// ⌥Space snippet palette. Hidden main window stays untouched; the palette
-    /// floats near the cursor without activating Clipword, so the subsequent
-    /// auto-paste lands in the app the user was typing in.
-    func toggleSuggestionPalette() {
-        guard Defaults[.inlineSuggestionsEnabled] else { return }
-        // The palette owns keyboard input; any inline auto-suggestion must go.
-        InlineSuggestionService.shared.dismiss()
-        SuggestionPanelController.shared.toggle(appState: self)
-    }
-
-    func showWindow(section: MainSection = .clipboard, fromStatusItem: Bool = false) {
-        WindowManager.shared.showMainWindow(section: section, fromStatusItem: fromStatusItem)
+    func showWindow(source: PaletteSource? = nil, fromStatusItem: Bool = false) {
+        WindowManager.shared.showMainWindow(source: source, fromStatusItem: fromStatusItem)
     }
 
     func hideWindow() {
         WindowManager.shared.hideMainWindow()
+    }
+
+    func showSettings(section: SettingsSection = .general) {
+        WindowManager.shared.showSettingsWindow(section: section)
     }
 
     func requestSearchFocus() {
@@ -95,84 +133,60 @@ final class AppState {
         searchFocusToken += 1
     }
 
-    func selectSection(_ section: MainSection) {
-        mainSection = section
-    }
-
-    func cycleSection(_ delta: Int) {
-        let all = MainSection.allCases
-        guard let index = all.firstIndex(of: mainSection) else { return }
-        let next = index + delta
-        guard all.indices.contains(next) else { return }
-        mainSection = all[next]
-    }
-
     func togglePinSelected() {
-        switch mainSection {
-        case .clipboard:
-            guard let item = selectedHistoryItem() else { return }
-            historyStore.togglePin(item)
-        default:
-            break
-        }
+        guard case .history(let id) = paletteSelection,
+              let item = historyStore.displayedItems.first(where: { $0.id == id }) else { return }
+        historyStore.togglePin(item)
     }
 
     func toggleBookmarkSelected() {
-        switch mainSection {
-        case .clipboard:
-            guard let item = selectedHistoryItem() else { return }
+        switch paletteSelection {
+        case .history(let id):
+            guard let item = historyStore.displayedItems.first(where: { $0.id == id }) else { return }
             historyStore.toggleBookmark(item)
-        case .bookmarks:
-            guard let item = selectedBookmarkItem() else { return }
+        case .bookmark(let id):
+            guard let item = historyStore.bookmarks.first(where: { $0.id == id }) else { return }
             historyStore.deleteBookmark(item)
-        default:
+        case .folder, nil:
             break
         }
     }
 
     func deleteSelected() {
-        switch mainSection {
-        case .clipboard:
-            guard let item = selectedHistoryItem() else { return }
+        switch paletteSelection {
+        case .history(let id):
+            guard let item = historyStore.displayedItems.first(where: { $0.id == id }) else { return }
             historyStore.delete(item)
-        case .bookmarks:
-            guard let item = selectedBookmarkItem() else { return }
+        case .bookmark(let id):
+            guard let item = historyStore.bookmarks.first(where: { $0.id == id }) else { return }
             historyStore.deleteBookmark(item)
-        default:
+        case .folder, nil:
             break
         }
     }
 
     func copySelected(paste: Bool, withoutFormatting: Bool = false) {
-        switch mainSection {
-        case .clipboard:
-            guard let item = selectedHistoryItem() else { return }
+        switch paletteSelection {
+        case .history(let id):
+            guard let item = historyStore.displayedItems.first(where: { $0.id == id }) else { return }
             historyStore.select(item, paste: paste, withoutFormatting: withoutFormatting)
             if paste { hideWindow() }
-        case .bookmarks:
-            guard let item = selectedBookmarkItem() else { return }
+        case .bookmark(let id):
+            guard let item = historyStore.bookmarks.first(where: { $0.id == id }) else { return }
             historyStore.selectBookmark(item, paste: paste, withoutFormatting: withoutFormatting)
             if paste { hideWindow() }
-        default:
+        case .folder, nil:
             break
         }
-    }
-
-    private func selectedHistoryItem() -> HistoryItem? {
-        guard let id = historyStore.selectedItemID else { return nil }
-        return historyStore.displayedItems.first { $0.id == id }
-    }
-
-    private func selectedBookmarkItem() -> BookmarkItem? {
-        guard let id = historyStore.selectedBookmarkID else { return nil }
-        return historyStore.bookmarks.first { $0.id == id }
     }
 
     func cycleNext() {
         let items = historyStore.displayedItems
         guard !items.isEmpty else { return }
         cycleIndex = (cycleIndex + 1) % items.count
-        historyStore.selectedItemID = items[cycleIndex].id
+        let item = items[cycleIndex]
+        paletteSelection = .history(item.id)
+        historyStore.selectedItemID = item.id
     }
 
     func pasteCycledItem() {
@@ -194,8 +208,9 @@ final class AppState {
         cycleIndex = 0
         if let first = historyStore.displayedItems.first {
             historyStore.selectedItemID = first.id
+            paletteSelection = .history(first.id)
         }
-        showWindow(section: .clipboard)
+        showWindow(source: .history)
     }
 
     func endCycleMode() {

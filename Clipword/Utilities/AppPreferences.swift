@@ -79,47 +79,6 @@ enum SearchMode: String, CaseIterable, Defaults.Serializable, Identifiable {
     var label: String { rawValue.capitalized }
 }
 
-enum TimeRangePreset: String, CaseIterable, Identifiable {
-    case today, week, month, quarter, all, custom
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .today: "Today"
-        case .week: "7 Days"
-        case .month: "30 Days"
-        case .quarter: "90 Days"
-        case .all: "All Time"
-        case .custom: "Custom"
-        }
-    }
-
-    func interval(customStart: Date?, customEnd: Date?) -> DateInterval? {
-        let now = Date()
-        let calendar = Calendar.current
-        switch self {
-        case .today:
-            let start = calendar.startOfDay(for: now)
-            return DateInterval(start: start, end: now)
-        case .week:
-            guard let start = calendar.date(byAdding: .day, value: -7, to: now) else { return nil }
-            return DateInterval(start: start, end: now)
-        case .month:
-            guard let start = calendar.date(byAdding: .day, value: -30, to: now) else { return nil }
-            return DateInterval(start: start, end: now)
-        case .quarter:
-            guard let start = calendar.date(byAdding: .day, value: -90, to: now) else { return nil }
-            return DateInterval(start: start, end: now)
-        case .all:
-            return nil
-        case .custom:
-            guard let start = customStart, let end = customEnd else { return nil }
-            return DateInterval(start: start, end: end)
-        }
-    }
-}
-
 extension Defaults.Keys {
     static let launchAtLogin = Key<Bool>("launchAtLogin", default: false)
     static let pasteAutomatically = Key<Bool>("pasteAutomatically", default: true)
@@ -136,10 +95,11 @@ extension Defaults.Keys {
     static let showFooter = Key<Bool>("showFooter", default: true)
     static let showSearchField = Key<Bool>("showSearchField", default: true)
     static let showFilterSidebar = Key<Bool>("showFilterSidebar", default: false)
-    static let typingAnalyticsEnabled = Key<Bool>("typingAnalyticsEnabled", default: false)
     static let saveText = Key<Bool>("saveText", default: true)
     static let saveImages = Key<Bool>("saveImages", default: true)
     static let saveFiles = Key<Bool>("saveFiles", default: true)
+    /// Fetch Open Graph title/thumbnail when viewing a copied link.
+    static let loadLinkPreviews = Key<Bool>("loadLinkPreviews", default: true)
     static let historySize = Key<Int>("historySize", default: 200)
     static let historyRetention = Key<HistoryRetention>("historyRetention", default: .unlimited)
     static let sortOrder = Key<SortOrder>("sortOrder", default: .lastCopied)
@@ -165,40 +125,9 @@ extension Defaults.Keys {
     static let clearOnQuit = Key<Bool>("clearOnQuit", default: false)
     static let clearSystemClipboard = Key<Bool>("clearSystemClipboard", default: false)
     static let clipboardCheckInterval = Key<Double>("clipboardCheckInterval", default: 0.5)
-    static let analyticsStopWords = Key<Bool>("analyticsStopWords", default: true)
-    static let analyticsMinWordLength = Key<Int>("analyticsMinWordLength", default: 3)
-    static let timeRangePreset = Key<String>("timeRangePreset", default: TimeRangePreset.week.rawValue)
     /// Legacy category migration ran at least once on this install (persisted so
     /// launch never re-decodes every item's blob).
     static let didBackfillCategories = Key<Bool>("didBackfillCategories", default: false)
-
-    // MARK: Inline snippet suggestions (Phase A: hotkey palette)
-
-    /// Master switch for the snippet suggestion palette (⌥Space by default).
-    static let inlineSuggestionsEnabled = Key<Bool>("inlineSuggestionsEnabled", default: false)
-    /// Minimum typed characters before prefix suggestions kick in.
-    static let inlineMinChars = Key<Int>("inlineMinChars", default: 2)
-    /// Items longer than this are never suggested (avoids multi-MB noise).
-    static let inlineMaxLength = Key<Int>("inlineMaxLength", default: 500)
-    /// Maximum rows shown in the palette.
-    static let inlineMaxSuggestions = Key<Int>("inlineMaxSuggestions", default: 6)
-    /// Debounce between keystroke and suggestion refresh (auto mode).
-    static let inlineDebounceMs = Key<Double>("inlineDebounceMs", default: 80)
-    /// Auto (as you type, needs caret) vs hotkey-only palette.
-    static let inlineTriggerMode = Key<InlineTriggerMode>("inlineTriggerMode", default: .hotkey)
     /// Migration flags
     static let didRemoveLegacyOptionHotkeys = Key<Bool>("didRemoveLegacyOptionHotkeys", default: false)
-}
-
-enum InlineTriggerMode: String, CaseIterable, Defaults.Serializable, Identifiable {
-    case auto, hotkey
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .auto: "As you type"
-        case .hotkey: "Hotkey only"
-        }
-    }
 }

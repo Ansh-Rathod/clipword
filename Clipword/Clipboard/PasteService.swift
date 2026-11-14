@@ -233,64 +233,6 @@ enum PasteService {
         }
     }
 
-    /// Phase B inline accept: deletes the typed prefix (backspace × n), then
-    /// inserts the snippet. Single-line snippets are typed directly (keystroke
-    /// injection) — no clipboard borrow, no ⌘V, no restore dance. Multi-line
-    /// snippets fall back to clipboard + ⌘V (typing newlines would trigger
-    /// form submits / chat sends).
-    static func insertText(_ item: HistoryItem, deleteBackCount: Int) {
-        guard isAccessibilityTrusted else {
-            requestAccessibility()
-            return
-        }
-        guard let text = item.plainText, !text.isEmpty else { return }
-
-        let targetPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
-
-        if isTypeable(text) {
-            // Delete the typed prefix first.
-            for _ in 0..<deleteBackCount {
-                postKeyEvent(virtualKey: 51) // kVK_Delete
-            }
-            if deleteBackCount > 0 {
-                usleep(50_000)
-            }
-            injectText(text, to: targetPid)
-            return
-        }
-
-        let pasteboard = NSPasteboard.general
-        let saved = pasteboard.string(forType: .string)
-
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-        pasteboard.setString("clipword", forType: PasteboardTypes.clipwordMarker)
-
-        // Delete the typed prefix first.
-        for _ in 0..<deleteBackCount {
-            postKeyEvent(virtualKey: 51) // kVK_Delete
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            var pasted = false
-            if let front = NSWorkspace.shared.frontmostApplication,
-               !isFlutterBased(front) {
-                pasted = pasteViaMenu(of: front)
-            }
-            if !pasted {
-                postPasteKeyEvent(to: targetPid)
-            }
-            // Restore what the user had on the clipboard before we borrowed it.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                guard let saved, !saved.isEmpty else { return }
-                let pb = NSPasteboard.general
-                pb.clearContents()
-                pb.setString(saved, forType: .string)
-                pb.setString("clipword", forType: PasteboardTypes.clipwordMarker)
-            }
-        }
-    }
-
     /// Types `text` as keyDown/keyUp events posted directly to the target
     /// app's pid, with the real text in the event's unicode string, chunked
     /// at 20 UTF-16 units (espanso's proven chunk size — some apps truncate
@@ -330,13 +272,6 @@ enum PasteService {
             post(false, chunk: chunk)
             usleep(3_000)
         }
-    }
-
-    private static func postKeyEvent(virtualKey: CGKeyCode, flags: CGEventFlags = [], isKeyUp: Bool = false) {
-        let source = CGEventSource(stateID: .hidSystemState)
-        let event = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: !isKeyUp)
-        if !flags.isEmpty { event?.flags = flags }
-        event?.post(tap: .cghidEventTap)
     }
 
     static func copyToClipboard(snapshot: PasteboardSnapshot, withoutFormatting: Bool) {

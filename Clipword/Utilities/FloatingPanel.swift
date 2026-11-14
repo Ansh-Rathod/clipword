@@ -17,19 +17,19 @@ final class PopupPanelController {
         self.onHide = onHide
 
         let rootView = AnyView(
-            ClipboardPopupView()
+            MainRootView()
                 .environment(appState)
                 .environment(appState.historyStore)
                 .environment(appState.searchService)
         )
 
         if panel == nil {
-            let hosting = NSHostingView(rootView: rootView)
+            let hosting = TransparentHostingView(rootView: rootView)
             hosting.frame = NSRect(x: 0, y: 0, width: 560, height: 520)
 
             let panel = KeyablePanel(
                 contentRect: hosting.frame,
-                styleMask: [.titled, .closable, .fullSizeContentView],
+                styleMask: [.borderless, .fullSizeContentView],
                 backing: .buffered,
                 defer: false
             )
@@ -39,12 +39,12 @@ final class PopupPanelController {
             panel.titleVisibility = .hidden
             panel.titlebarAppearsTransparent = true
             panel.isMovableByWindowBackground = true
-            panel.backgroundColor = .windowBackgroundColor
-            panel.isOpaque = true
+            panel.backgroundColor = .clear
+            panel.isOpaque = false
             panel.hasShadow = true
             panel.hidesOnDeactivate = false
             panel.isReleasedWhenClosed = false
-            panel.contentView = hosting
+            panel.contentView = LiquidGlass.embed(hosting, cornerRadius: LiquidGlassMetrics.panelRadius)
             panel.standardWindowButton(.closeButton)?.isHidden = true
             panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
             panel.standardWindowButton(.zoomButton)?.isHidden = true

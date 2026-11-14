@@ -245,9 +245,208 @@ private struct KeyboardFocusSink: View {
     }
 }
 
+/// Pixel scroll offset for a named pane. Not `@Observable` so tracking
+/// while the user drags a scroller doesn't rebuild SwiftUI. AppKit callbacks
+/// always hop to the main queue before touching this.
+final class PaletteScrollStore: @unchecked Sendable {
+    private var offsets: [String: CGPoint] = [:]
+
+    func offset(for key: String) -> CGPoint {
+        offsets[key] ?? .zero
+    }
+
+    func setOffset(_ offset: CGPoint, for key: String) {
+        offsets[key] = offset
+    }
+}
+
+enum PaletteScrollKey {
+    static func list(_ source: PaletteSource) -> String { "list-\(source.rawValue)" }
+    static func preview(_ id: UUID) -> String { "preview-\(id.uuidString)" }
+    static func info(_ id: UUID) -> String { "info-\(id.uuidString)" }
+}
+
+/// Re-applies a saved `NSScrollView` origin after the panel is ordered out
+/// (SwiftUI Lists and ScrollViews often jump to top on the next appear).
+struct PersistentScrollOffset: NSViewRepresentable {
+    let store: PaletteScrollStore
+    let key: String
+    var restoreToken: Int
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(store: store, key: key)
+    }
+
+    func makeNSView(context: Context) -> PersistentScrollProbe {
+        let view = PersistentScrollProbe()
+        view.coordinator = context.coordinator
+        return view
+    }
+
+    func updateNSView(_ nsView: PersistentScrollProbe, context: Context) {
+        let keyChanged = context.coordinator.key != key
+        context.coordinator.store = store
+        context.coordinator.key = key
+        nsView.coordinator = context.coordinator
+        context.coordinator.attach(nsView.nearestScrollView())
+        context.coordinator.restore(token: restoreToken, keyChanged: keyChanged)
+    }
+
+    final class Coordinator: @unchecked Sendable {
+        var store: PaletteScrollStore
+        var key: String
+        var lastRestoreToken = -1
+        var isRestoring = false
+        weak var scrollView: NSScrollView?
+        private var observer: NSObjectProtocol?
+
+        init(store: PaletteScrollStore, key: String) {
+            self.store = store
+            self.key = key
+        }
+
+        deinit {
+            if let observer {
+                NotificationCenter.default.removeObserver(observer)
+            }
+        }
+
+        func attach(_ scrollView: NSScrollView?) {
+            guard let scrollView else { return }
+            let isNew = self.scrollView !== scrollView
+            if isNew {
+                detach()
+                self.scrollView = scrollView
+                scrollView.contentView.postsBoundsChangedNotifications = true
+                observer = NotificationCenter.default.addObserver(
+                    forName: NSView.boundsDidChangeNotification,
+                    object: scrollView.contentView,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.capture()
+                }
+            }
+            if isNew {
+                restoreNow()
+            }
+        }
+
+        func restore(token: Int, keyChanged: Bool = false) {
+            let tokenChanged = token != lastRestoreToken
+            lastRestoreToken = token
+            guard tokenChanged || keyChanged else { return }
+            restoreNow()
+        }
+
+        func restoreNow() {
+            isRestoring = true
+            applySaved()
+            DispatchQueue.main.async { [weak self] in
+                self?.applySaved()
+                DispatchQueue.main.async {
+                    self?.isRestoring = false
+                }
+            }
+        }
+
+        private func capture() {
+            guard !isRestoring, let scrollView else { return }
+            store.setOffset(scrollView.contentView.bounds.origin, for: key)
+        }
+
+        private func applySaved() {
+            guard let scrollView else { return }
+            ScrollOffsetSupport.apply(store.offset(for: key), to: scrollView)
+        }
+
+        private func detach() {
+            if let observer {
+                NotificationCenter.default.removeObserver(observer)
+                self.observer = nil
+            }
+            scrollView = nil
+        }
+    }
+}
+
+final class PersistentScrollProbe: NSView {
+    var coordinator: PersistentScrollOffset.Coordinator?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        coordinator?.attach(nearestScrollView())
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        coordinator?.attach(nearestScrollView())
+    }
+
+    override func layout() {
+        super.layout()
+        coordinator?.attach(nearestScrollView())
+    }
+
+    /// `enclosingScrollView` is nil when this probe is a List background
+    /// sibling of the table scroller. Prefer the table's scroller so we don't
+    /// latch onto the preview pane.
+    func nearestScrollView() -> NSScrollView? {
+        if let scroll = enclosingScrollView { return scroll }
+        var node: NSView? = self
+        var depth = 0
+        while let view = node, depth < 8 {
+            if let table = Self.firstTable(in: view) {
+                return table.enclosingScrollView
+            }
+            if let scroll = view as? NSScrollView { return scroll }
+            node = view.superview
+            depth += 1
+        }
+        node = self
+        depth = 0
+        while let view = node, depth < 6 {
+            if let scroll = Self.firstScrollView(in: view) { return scroll }
+            node = view.superview
+            depth += 1
+        }
+        return nil
+    }
+
+    private static func firstTable(in view: NSView) -> NSTableView? {
+        if let table = view as? NSTableView { return table }
+        for subview in view.subviews {
+            if let table = firstTable(in: subview) { return table }
+        }
+        return nil
+    }
+
+    private static func firstScrollView(in view: NSView) -> NSScrollView? {
+        if let scroll = view as? NSScrollView { return scroll }
+        for subview in view.subviews {
+            if let scroll = firstScrollView(in: subview) { return scroll }
+        }
+        return nil
+    }
+}
+
+enum ScrollOffsetSupport {
+    static func apply(_ offset: CGPoint, to scrollView: NSScrollView) {
+        guard let document = scrollView.documentView else { return }
+        let clip = scrollView.contentView.bounds.size
+        let doc = document.bounds.size
+        let x = min(max(0, offset.x), max(0, doc.width - clip.width))
+        let y = min(max(0, offset.y), max(0, doc.height - clip.height))
+        var bounds = scrollView.contentView.bounds
+        bounds.origin = NSPoint(x: x, y: y)
+        scrollView.contentView.bounds = bounds
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+}
+
 /// Stops the AppKit table behind a SwiftUI `List` from becoming first responder
 /// on click, which would swallow arrow keys and Delete.
-private struct RefuseListFirstResponder: NSViewRepresentable {
+struct RefuseListFirstResponder: NSViewRepresentable {
     func makeNSView(context: Context) -> RefuseListFirstResponderView {
         RefuseListFirstResponderView()
     }
@@ -257,7 +456,7 @@ private struct RefuseListFirstResponder: NSViewRepresentable {
     }
 }
 
-private final class RefuseListFirstResponderView: NSView {
+final class RefuseListFirstResponderView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         disableTableFirstResponder()
@@ -275,6 +474,9 @@ private final class RefuseListFirstResponderView: NSView {
                 table.refusesFirstResponder = true
                 table.selectionHighlightStyle = .none
                 table.focusRingType = .none
+                table.backgroundColor = .clear
+                table.enclosingScrollView?.drawsBackground = false
+                table.enclosingScrollView?.backgroundColor = .clear
                 return
             }
             node = view.superview
@@ -333,6 +535,15 @@ extension View {
             .focusEffectDisabled()
             .listRowBackground(KeyboardListRowChrome(isSelected: selected, isActive: active))
             .listRowSeparator(.hidden)
+    }
+
+    func persistScrollOffset(store: PaletteScrollStore, key: String, restoreToken: Int) -> some View {
+        background {
+            PersistentScrollOffset(store: store, key: key, restoreToken: restoreToken)
+                .frame(width: 0, height: 0)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
     }
 
     /// Keeps the row identified by `target` visible whenever it changes.
@@ -552,10 +763,14 @@ struct KeyboardMenuPicker<Value: Hashable>: View {
                 .font(.system(size: 8, weight: .semibold))
                 .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .padding(.horizontal, LiquidGlassMetrics.pillPaddingH)
+        .padding(.vertical, LiquidGlassMetrics.pillPaddingV)
+        .liquidGlass(
+            .interactive,
+            in: Capsule(),
+            fallback: .quaternary.opacity(0.55)
+        )
+        .contentShape(Capsule())
         .pointingHandCursor()
         .background {
             PersistentMenuAnchorProbe(box: anchor)
@@ -969,8 +1184,15 @@ struct StatCardView: View {
 /// is always available through Copy/Paste.
 struct ReadOnlyTextView: NSViewRepresentable {
     let text: String
+    var scrollStore: PaletteScrollStore? = nil
+    var scrollKey: String? = nil
+    var restoreToken: Int = 0
 
     static let previewCharacterLimit = 100_000
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
 
     func makeNSView(context: Context) -> NSScrollView {
         // Explicit TextKit 2: viewport-based layout for large documents. Avoid
@@ -1010,18 +1232,78 @@ struct ReadOnlyTextView: NSViewRepresentable {
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = false
+        context.coordinator.attach(scrollView, store: scrollStore, key: scrollKey)
+        context.coordinator.restore(scrollView, store: scrollStore, key: scrollKey)
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
+        context.coordinator.attach(scrollView, store: scrollStore, key: scrollKey)
         // Only replace when the item actually changed — avoids relayout churn on
         // every SwiftUI body evaluation.
         let display = Self.bounded(text)
-        if textView.string != display {
+        let textChanged = textView.string != display
+        if textChanged {
             textView.string = display
             textView.setSelectedRange(NSRange(location: 0, length: 0))
-            textView.scrollToBeginningOfDocument(nil)
+        }
+        let tokenChanged = context.coordinator.lastRestoreToken != restoreToken
+        context.coordinator.lastRestoreToken = restoreToken
+        if textChanged || tokenChanged {
+            context.coordinator.restore(scrollView, store: scrollStore, key: scrollKey)
+        }
+    }
+
+    final class Coordinator: @unchecked Sendable {
+        var lastRestoreToken = -1
+        var isRestoring = false
+        private var observer: NSObjectProtocol?
+        private var key: String?
+
+        deinit {
+            if let observer {
+                NotificationCenter.default.removeObserver(observer)
+            }
+        }
+
+        func attach(_ scrollView: NSScrollView, store: PaletteScrollStore?, key: String?) {
+            self.key = key
+            if let observer {
+                NotificationCenter.default.removeObserver(observer)
+                self.observer = nil
+            }
+            guard let store, let key else { return }
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            observer = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification,
+                object: scrollView.contentView,
+                queue: .main
+            ) { [weak self, weak scrollView] _ in
+                guard let self, let scrollView, !self.isRestoring else { return }
+                store.setOffset(scrollView.contentView.bounds.origin, for: key)
+            }
+        }
+
+        func restore(_ scrollView: NSScrollView, store: PaletteScrollStore?, key: String?) {
+            let offset = (store != nil && key != nil) ? store!.offset(for: key!) : .zero
+            isRestoring = true
+            if offset == .zero {
+                (scrollView.documentView as? NSTextView)?.scrollToBeginningOfDocument(nil)
+            } else {
+                ScrollOffsetSupport.apply(offset, to: scrollView)
+            }
+            DispatchQueue.main.async { [weak self, weak scrollView] in
+                guard let self, let scrollView else { return }
+                if offset == .zero {
+                    (scrollView.documentView as? NSTextView)?.scrollToBeginningOfDocument(nil)
+                } else {
+                    ScrollOffsetSupport.apply(offset, to: scrollView)
+                }
+                DispatchQueue.main.async {
+                    self.isRestoring = false
+                }
+            }
         }
     }
 
@@ -1040,6 +1322,9 @@ struct ReadOnlyTextView: NSViewRepresentable {
 struct TextPreviewPane: View {
     let text: String
     let charCount: Int
+    var scrollStore: PaletteScrollStore? = nil
+    var scrollKey: String? = nil
+    var restoreToken: Int = 0
 
     private var isTruncated: Bool {
         charCount > ReadOnlyTextView.previewCharacterLimit
@@ -1047,7 +1332,12 @@ struct TextPreviewPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ReadOnlyTextView(text: text)
+            ReadOnlyTextView(
+                text: text,
+                scrollStore: scrollStore,
+                scrollKey: scrollKey,
+                restoreToken: restoreToken
+            )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             if isTruncated {
                 Divider()
@@ -1174,19 +1464,15 @@ struct ScaleOnPressButtonStyle: ButtonStyle {
     }
 }
 
-struct DetailIconButton<Value: Hashable>: View {
+struct DetailIconButton: View {
     let systemName: String
     let help: String
     var tint: Color? = nil
     var isActive: Bool = false
     var flashSuccess: Bool = false
-    var focus: FocusState<Value?>.Binding
-    var focusValue: Value
     let action: () -> Void
 
     @State private var hovering = false
-    @State private var showTip = false
-    @State private var hoverTask: Task<Void, Never>?
 
     private var iconName: String {
         flashSuccess ? "checkmark" : systemName
@@ -1201,19 +1487,22 @@ struct DetailIconButton<Value: Hashable>: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: iconName)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: LiquidGlassMetrics.iconFont, weight: .semibold))
                 .foregroundStyle(iconTint)
                 .contentTransition(.symbolEffect(.replace))
                 .symbolEffect(.bounce, value: isActive)
-                .frame(width: 28, height: 28)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(isActive || flashSuccess ? iconTint.opacity(0.18) : Color.primary.opacity(0.07))
+                .frame(width: LiquidGlassMetrics.iconButtonSize, height: LiquidGlassMetrics.iconButtonSize)
+                .liquidGlass(
+                    .interactive,
+                    in: RoundedRectangle(cornerRadius: LiquidGlassMetrics.iconRadius, style: .continuous),
+                    fallback: isActive || flashSuccess ? iconTint.opacity(0.18) : Color.primary.opacity(0.10)
                 )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(isActive || flashSuccess ? iconTint.opacity(0.4) : Color.primary.opacity(0.08))
-                )
+                .overlay {
+                    if !LiquidGlass.isSupported {
+                        RoundedRectangle(cornerRadius: LiquidGlassMetrics.iconRadius, style: .continuous)
+                            .strokeBorder(isActive || flashSuccess ? iconTint.opacity(0.4) : Color.primary.opacity(0.08))
+                    }
+                }
                 .scaleEffect(hovering ? 1.08 : 1)
                 .animation(.spring(response: 0.28, dampingFraction: 0.62), value: hovering)
                 .animation(.spring(response: 0.3, dampingFraction: 0.68), value: isActive)
@@ -1222,49 +1511,7 @@ struct DetailIconButton<Value: Hashable>: View {
         .buttonStyle(ScaleOnPressButtonStyle())
         .pointingHandCursor()
         .accessibilityLabel(help)
-        .arrowFocus(focus, equals: focusValue)
-        .onHover(perform: handleHover)
-        .overlay(alignment: .top) {
-            if showTip {
-                tooltip
-                    .fixedSize()
-                    .offset(y: -34)
-                    .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
-                    .allowsHitTesting(false)
-            }
-        }
-        .zIndex(showTip ? 20 : 0)
-        .onDisappear {
-            hoverTask?.cancel()
-        }
-    }
-
-    private var tooltip: some View {
-        Text(help)
-            .font(.caption.weight(.medium))
-            .foregroundStyle(.primary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(.ultraThickMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.08))
-            )
-            .shadow(color: .black.opacity(0.22), radius: 8, y: 2)
-    }
-
-    private func handleHover(_ on: Bool) {
-        hovering = on
-        hoverTask?.cancel()
-        if on {
-            hoverTask = Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(280))
-                guard !Task.isCancelled, hovering else { return }
-                withAnimation(.easeOut(duration: 0.12)) { showTip = true }
-            }
-        } else {
-            withAnimation(.easeOut(duration: 0.08)) { showTip = false }
-        }
+        .onHover { hovering = $0 }
     }
 }
 
@@ -1281,9 +1528,13 @@ struct ActionFeedbackToast: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(.ultraThickMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08)))
-        .shadow(color: .black.opacity(0.2), radius: 10, y: 3)
+        .liquidGlass(.regular, in: Capsule())
+        .overlay {
+            if !LiquidGlass.isSupported {
+                Capsule().strokeBorder(Color.primary.opacity(0.08))
+            }
+        }
+        .shadow(color: .black.opacity(LiquidGlass.isSupported ? 0.12 : 0.2), radius: LiquidGlass.isSupported ? 8 : 10, y: 3)
     }
 }
 

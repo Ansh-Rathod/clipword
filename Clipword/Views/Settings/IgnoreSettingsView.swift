@@ -1,56 +1,34 @@
+import AppKit
 import Defaults
 import SwiftUI
 import UniformTypeIdentifiers
-
-private enum IgnoreFocus: Hashable {
-    case tab(Int), allowOnly, field, add, pick, list
-}
 
 struct IgnoreSettingsView: View {
     @Default(.ignoredApps) private var ignoredApps
     @Default(.allowedAppsOnly) private var allowedAppsOnly
     @Default(.ignoredPasteboardTypes) private var ignoredPasteboardTypes
     @Default(.ignoredRegexPatterns) private var ignoredRegexPatterns
-    @Environment(\.arrowFocusExit) private var arrowFocusExit
-    @Environment(\.arrowFocusEnterToken) private var enterToken
-    @Environment(\.contentShouldTakeFocus) private var contentShouldTakeFocus
-    @Environment(\.sidebarOpenForFocus) private var sidebarOpenForFocus
-    @Environment(\.globalJumpToken) private var globalJumpToken
-    @Environment(\.globalJumpDirection) private var globalJumpDirection
-    @Environment(AppState.self) private var appState
 
     @State private var newApp = ""
     @State private var newType = ""
     @State private var newRegex = ""
-    @State private var selectedApp: String?
-    @State private var selectedType: String?
-    @State private var selectedRegex: String?
-    @State private var appListScrollTarget: String?
-    @State private var typeListScrollTarget: String?
-    @State private var regexListScrollTarget: String?
     @State private var selectedTab = 0
-    @FocusState private var focus: IgnoreFocus?
-    @FocusState private var fieldActive: Bool
-
-    private var focusOrder: [IgnoreFocus] {
-        var items: [IgnoreFocus] = [.tab(0), .tab(1), .tab(2)]
-        if selectedTab == 0 { items.append(.allowOnly) }
-        items.append(contentsOf: [.field, .add, .list])
-        return items
-    }
-
-    private var focusRows: [[IgnoreFocus]] {
-        let tabs: [IgnoreFocus] = [.tab(0), .tab(1), .tab(2)]
-        let content: [IgnoreFocus] = selectedTab == 0
-            ? [.allowOnly, .field, .add, .pick, .list]
-            : [.field, .add, .list]
-        return [tabs] + content.map { [$0] }
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            tabBar
+            Picker("Ignore", selection: $selectedTab) {
+                Text("Apps").tag(0)
+                Text("Types").tag(1)
+                Text("Regex").tag(2)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal)
+            .padding(.top, 16)
+            .padding(.bottom, 12)
+
             Divider()
+
             Group {
                 switch selectedTab {
                 case 0: appsTab
@@ -60,355 +38,89 @@ struct IgnoreSettingsView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .padding()
-        .onAppear {
-            if contentShouldTakeFocus { focus = focusOrder.first }
-        }
-        .onChange(of: enterToken) { _, _ in focus = focusOrder.first; fieldActive = false }
-        .onChange(of: selectedTab) { _, newTab in
-            focus = .tab(newTab)
-            fieldActive = false
-        }
-        .onChange(of: globalJumpToken) { _, _ in applyGlobalJump(globalJumpDirection) }
-        .onChange(of: contentShouldTakeFocus) { _, should in
-            if !should { focus = nil; fieldActive = false }
-        }
-        .onChange(of: fieldActive) { _, active in
-            appState.isSearchFocused = active
-        }
-        .onKeyPress(.rightArrow) { handleArrow(.right) }
-        .onKeyPress(.leftArrow) { handleArrow(.left) }
-        .onKeyPress(keys: [.upArrow, .downArrow]) { press in
-            handleArrow(press.key == .upArrow ? .up : .down, modifiers: press.modifiers)
-        }
-        .onKeyPress(keys: [.delete, .deleteForward]) { _ in handleDelete() }
-        .keyboardDeleteFallback(enabled: focus == .list && !fieldActive) {
-            _ = handleDelete()
-        }
-        .onKeyPress(.return) { activate() }
-        .onKeyPress(.space) { activate() }
-        .onKeyPress(.escape) {
-            if fieldActive {
-                fieldActive = false
-                focus = .field
-                return .handled
-            }
-            // Esc from any highlighted control → back to the sidebar.
-            guard focus != nil else { return .ignored }
-            arrowFocusExit?(.previous)
-            return .handled
-        }
-        .onDisappear { appState.isSearchFocused = false }
-    }
-
-    private var tabBar: some View {
-        HStack(spacing: 4) {
-            tabButton("Apps", systemImage: "app.badge", tab: 0)
-            tabButton("Types", systemImage: "doc.badge.gearshape", tab: 1)
-            tabButton("Regex", systemImage: "text.magnifyingglass", tab: 2)
-            Spacer()
-        }
-        .padding(.bottom, 10)
-    }
-
-    private func tabButton(_ title: String, systemImage: String, tab: Int) -> some View {
-        Button {
-            selectedTab = tab
-        } label: {
-            Label(title, systemImage: systemImage)
-                .font(.body)
-                .foregroundStyle(selectedTab == tab ? Color.accentColor : Color.primary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 5)
-                .background(
-                    selectedTab == tab ? Color.accentColor.opacity(0.12) : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 6)
-                )
-        }
-        .buttonStyle(.borderless)
-        .arrowFocus($focus, equals: IgnoreFocus.tab(tab))
-        .pointingHandCursor()
+        .padding(.bottom)
     }
 
     private var appsTab: some View {
-        VStack(alignment: .leading) {
+        VStack(alignment: .leading, spacing: 12) {
             Toggle("Allow listed apps only", isOn: $allowedAppsOnly)
-                .arrowFocus($focus, equals: .allowOnly)
             HStack {
                 TextField("Bundle ID (e.g. com.apple.Safari)", text: $newApp)
+                    .textFieldStyle(.roundedBorder)
                     .onSubmit { addApp() }
-                    .focused($fieldActive)
                 Button("Add") { addApp() }
                     .disabled(newApp.isEmpty)
-                    .arrowFocus($focus, equals: .add)
                 Button {
                     pickAppFromFinder()
                 } label: {
                     Label("Choose App…", systemImage: "folder")
                 }
                 .help("Pick an app from Finder; its clipboard content will be ignored")
-                .arrowFocus($focus, equals: .pick)
             }
-            .background {
-                Color.clear
-                    .focusable(!fieldActive)
-                    .focused($focus, equals: .field)
-            }
-            .modifier(ArrowFocusRingModifier(forced: focus == .field && !fieldActive))
             List {
                 ForEach(ignoredApps, id: \.self) { app in
                     HStack {
                         Text(app)
-                            .foregroundStyle(selectedApp == app && focus == .list ? Color.white : Color.primary)
                         Spacer()
                         Button("Remove", role: .destructive) { removeApp(app) }
                             .buttonStyle(.borderless)
-                            .foregroundStyle(selectedApp == app && focus == .list ? Color.white : Color.red)
-                    }
-                    .tag(app)
-                    .keyboardListRow(selected: selectedApp == app, listActive: focus == .list)
-                    .id(app)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        selectedApp = app
-                        focus = .list
                     }
                 }
             }
-            .arrowListFocus($focus, equals: .list)
-            .scrollToVisible(target: appListScrollTarget)
-            .onDeleteCommand {
-                if let selectedApp { removeApp(selectedApp) }
-            }
+            .listStyle(.inset)
         }
+        .padding(.horizontal)
+        .padding(.top, 12)
     }
 
     private var typesTab: some View {
-        VStack(alignment: .leading) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
                 TextField("Pasteboard type UTI", text: $newType)
+                    .textFieldStyle(.roundedBorder)
                     .onSubmit { addType() }
-                    .focused($fieldActive)
                 Button("Add") { addType() }
                     .disabled(newType.isEmpty)
-                    .arrowFocus($focus, equals: .add)
             }
-            .modifier(ArrowFocusRingModifier(forced: focus == .field && !fieldActive))
-            .focusable(!fieldActive)
-            .focused($focus, equals: .field)
             List {
                 ForEach(ignoredPasteboardTypes, id: \.self) { type in
                     HStack {
                         Text(type)
-                            .foregroundStyle(selectedType == type && focus == .list ? Color.white : Color.primary)
                         Spacer()
                         Button("Remove", role: .destructive) { removeType(type) }
                             .buttonStyle(.borderless)
-                            .foregroundStyle(selectedType == type && focus == .list ? Color.white : Color.red)
-                    }
-                    .tag(type)
-                    .keyboardListRow(selected: selectedType == type, listActive: focus == .list)
-                    .id(type)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        selectedType = type
-                        focus = .list
                     }
                 }
             }
-            .arrowListFocus($focus, equals: .list)
-            .scrollToVisible(target: typeListScrollTarget)
-            .onDeleteCommand {
-                if let selectedType { removeType(selectedType) }
-            }
+            .listStyle(.inset)
         }
+        .padding(.horizontal)
+        .padding(.top, 12)
     }
 
     private var regexTab: some View {
-        VStack(alignment: .leading) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
                 TextField("Regex pattern", text: $newRegex)
+                    .textFieldStyle(.roundedBorder)
                     .onSubmit { addRegex() }
-                    .focused($fieldActive)
                 Button("Add") { addRegex() }
                     .disabled(newRegex.isEmpty)
-                    .arrowFocus($focus, equals: .add)
             }
-            .modifier(ArrowFocusRingModifier(forced: focus == .field && !fieldActive))
-            .focusable(!fieldActive)
-            .focused($focus, equals: .field)
             List {
                 ForEach(ignoredRegexPatterns, id: \.self) { pattern in
                     HStack {
                         Text(pattern)
-                            .foregroundStyle(selectedRegex == pattern && focus == .list ? Color.white : Color.primary)
                         Spacer()
                         Button("Remove", role: .destructive) { removeRegex(pattern) }
                             .buttonStyle(.borderless)
-                            .foregroundStyle(selectedRegex == pattern && focus == .list ? Color.white : Color.red)
-                    }
-                    .tag(pattern)
-                    .keyboardListRow(selected: selectedRegex == pattern, listActive: focus == .list)
-                    .id(pattern)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        selectedRegex = pattern
-                        focus = .list
                     }
                 }
             }
-            .arrowListFocus($focus, equals: .list)
-            .scrollToVisible(target: regexListScrollTarget)
-            .onDeleteCommand {
-                if let selectedRegex { removeRegex(selectedRegex) }
-            }
+            .listStyle(.inset)
         }
-    }
-
-    /// ⌘↑/⌘↓ jump the current tab's list to its top/bottom item (or, when the
-    /// list is empty, the first/last focusable control). Works even when no
-    /// control is focused.
-    private func applyGlobalJump(_ direction: SpatialDirection) {
-        let hasItems: Bool
-        switch selectedTab {
-        case 0: hasItems = !ignoredApps.isEmpty
-        case 1: hasItems = !ignoredPasteboardTypes.isEmpty
-        default: hasItems = !ignoredRegexPatterns.isEmpty
-        }
-        guard hasItems else {
-            focus = direction == .up ? focusOrder.first : focusOrder.last
-            return
-        }
-        focus = .list
-        moveListSelection(direction == .up ? -10_000 : 10_000)
-    }
-
-    private func handleArrow(_ direction: SpatialDirection, modifiers: EventModifiers = []) -> KeyPress.Result {
-        // ⌘↑/⌘↓ jump to the top/bottom item from anywhere in the view (unless
-        // the text field is being edited, where they're text-navigation).
-        if (direction == .up || direction == .down), modifiers.contains(.command),
-           !(focus == .field && fieldActive) {
-            applyGlobalJump(direction)
-            return .handled
-        }
-
-        guard let current = focus else { return .ignored }
-
-        if current == .field, fieldActive {
-            if direction == .left || direction == .right { return .ignored }
-            fieldActive = false
-        }
-
-        if current == .list, direction == .up || direction == .down {
-            moveListSelection(direction == .down ? 1 : -1)
-            return .handled
-        }
-
-        let result = moveSpatialFocus(from: current, direction: direction, rows: focusRows)
-        switch result {
-        case .moved(let next):
-            fieldActive = false
-            focus = next
-            if case .tab(let tab) = next { selectedTab = tab }
-            if next == .list { ensureListSelection() }
-            return .handled
-        case .listMove:
-            return .handled
-        case .exitPrevious:
-            fieldActive = false
-            applyArrowEdgeExit(
-                direction: direction,
-                currentIsLeading: current == focusRows.first?.first || current == .list,
-                sidebarOpen: sidebarOpenForFocus,
-                exit: arrowFocusExit
-            )
-            return .handled
-        case .exitNext:
-            return .handled
-        }
-    }
-
-    private func handleDelete() -> KeyPress.Result {
-        guard focus == .list, !fieldActive else { return .ignored }
-        switch selectedTab {
-        case 0:
-            if let selectedApp { removeApp(selectedApp) }
-        case 1:
-            if let selectedType { removeType(selectedType) }
-        default:
-            if let selectedRegex { removeRegex(selectedRegex) }
-        }
-        return .handled
-    }
-
-    private func ensureListSelection() {
-        switch selectedTab {
-        case 0:
-            if selectedApp == nil { selectedApp = ignoredApps.first }
-        case 1:
-            if selectedType == nil { selectedType = ignoredPasteboardTypes.first }
-        default:
-            if selectedRegex == nil { selectedRegex = ignoredRegexPatterns.first }
-        }
-    }
-
-    private func moveListSelection(_ delta: Int) {
-        switch selectedTab {
-        case 0:
-            guard !ignoredApps.isEmpty else { return }
-            let items = ignoredApps
-            let index = selectedApp.flatMap { items.firstIndex(of: $0) } ?? 0
-            let next = items[max(0, min(items.count - 1, index + delta))]
-            selectedApp = next
-            appListScrollTarget = next
-        case 1:
-            guard !ignoredPasteboardTypes.isEmpty else { return }
-            let items = ignoredPasteboardTypes
-            let index = selectedType.flatMap { items.firstIndex(of: $0) } ?? 0
-            let next = items[max(0, min(items.count - 1, index + delta))]
-            selectedType = next
-            typeListScrollTarget = next
-        default:
-            guard !ignoredRegexPatterns.isEmpty else { return }
-            let items = ignoredRegexPatterns
-            let index = selectedRegex.flatMap { items.firstIndex(of: $0) } ?? 0
-            let next = items[max(0, min(items.count - 1, index + delta))]
-            selectedRegex = next
-            regexListScrollTarget = next
-        }
-    }
-
-    private func activate() -> KeyPress.Result {
-        switch focus {
-        case .tab(let tab):
-            selectedTab = tab
-            return .handled
-        case .allowOnly:
-            allowedAppsOnly.toggle()
-            return .handled
-        case .field:
-            fieldActive = true
-            return .handled
-        case .add:
-            switch selectedTab {
-            case 0: addApp()
-            case 1: addType()
-            default: addRegex()
-            }
-            return .handled
-        case .pick:
-            pickAppFromFinder()
-            return .handled
-        case .list:
-            switch selectedTab {
-            case 0: if let selectedApp { removeApp(selectedApp) }
-            case 1: if let selectedType { removeType(selectedType) }
-            default: if let selectedRegex { removeRegex(selectedRegex) }
-            }
-            return .handled
-        default:
-            return .ignored
-        }
+        .padding(.horizontal)
+        .padding(.top, 12)
     }
 
     private func addApp() {
@@ -417,8 +129,6 @@ struct IgnoreSettingsView: View {
         newApp = ""
     }
 
-    /// Opens a Finder picker so the user can choose an app (or apps) whose
-    /// clipboard content should be ignored. Adds each chosen app's bundle ID.
     private func pickAppFromFinder() {
         let panel = NSOpenPanel()
         panel.title = "Choose App to Ignore"
@@ -438,11 +148,7 @@ struct IgnoreSettingsView: View {
     }
 
     private func removeApp(_ app: String) {
-        let index = ignoredApps.firstIndex(of: app)
         ignoredApps.removeAll { $0 == app }
-        if selectedApp == app {
-            selectedApp = adjacentSelection(in: ignoredApps, preferring: index)
-        }
     }
 
     private func addType() {
@@ -452,11 +158,7 @@ struct IgnoreSettingsView: View {
     }
 
     private func removeType(_ type: String) {
-        let index = ignoredPasteboardTypes.firstIndex(of: type)
         ignoredPasteboardTypes.removeAll { $0 == type }
-        if selectedType == type {
-            selectedType = adjacentSelection(in: ignoredPasteboardTypes, preferring: index)
-        }
     }
 
     private func addRegex() {
@@ -466,16 +168,6 @@ struct IgnoreSettingsView: View {
     }
 
     private func removeRegex(_ pattern: String) {
-        let index = ignoredRegexPatterns.firstIndex(of: pattern)
         ignoredRegexPatterns.removeAll { $0 == pattern }
-        if selectedRegex == pattern {
-            selectedRegex = adjacentSelection(in: ignoredRegexPatterns, preferring: index)
-        }
-    }
-
-    private func adjacentSelection(in items: [String], preferring index: Int?) -> String? {
-        guard !items.isEmpty else { return nil }
-        guard let index else { return items.first }
-        return items[min(index, items.count - 1)]
     }
 }

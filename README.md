@@ -1,19 +1,16 @@
 # Clipword
 
-Native macOS clipboard manager with analytics. Built with SwiftUI (macOS 15+), SwiftData, and local-only storage.
+Native macOS clipboard manager. Built with SwiftUI (macOS 15+), SwiftData, and local-only storage.
 
 ## Features
 
 - Menu bar clipboard history (⇧⌘C default hotkey)
 - Search (exact, fuzzy, regex, mixed)
-- Pin, delete, clear history
+- Pin, bookmark, delete, and clear history
 - Auto-paste with Accessibility permission
 - Paste stack for sequential pasting
 - Image OCR via Vision framework
-- **Analytics dashboard**: word/line/char counts, top words, per-app usage, activity charts, paste stats
-- Configurable time ranges (Today, 7d, 30d, 90d, All, Custom)
-- Full Settings window with 7 panes (General, Appearance, Storage, Ignore, Pins, Advanced, Analytics)
-- App Intents for Shortcuts integration
+- Settings for general, storage, ignore rules, and advanced options
 
 ## Requirements
 
@@ -38,17 +35,16 @@ xcodebuild -project Clipword.xcodeproj -scheme Clipword -configuration Debug bui
 
 1. Launch Clipword — it appears in the menu bar
 2. Copy text/images/files; history is saved automatically
-3. Press **⇧⌘C** or click the menu bar icon → **Open Clipword**
-4. Search, select with Enter, paste with **⌥Enter**
-5. Open **Analytics** from the menu bar or Settings → Analytics tab
-6. Configure preferences via **Clipword → Settings** (⌘,)
+3. Press **⇧⌘C** or click the menu bar icon
+4. Search, select with Enter to paste
+5. Configure preferences via **Clipword → Settings** (⌘,)
 
 ## Data storage
 
 - History: `~/Library/Application Support/Clipword/Storage.sqlite`
 - Preferences: `~/Library/Preferences/com.clipword.app.plist`
 
-All data stays on your Mac. No network calls.
+History stays on your Mac. Viewing a copied link can fetch its title and thumbnail (cached locally); this can be turned off in Settings → Storage.
 
 ## Permissions
 
