@@ -28,7 +28,7 @@ final class StatusBarController: NSObject {
             showContextMenu()
             return
         }
-        appState?.toggleWindow(section: .clipboard)
+        appState?.toggleWindow(section: .clipboard, fromStatusItem: true)
     }
 
     private func showContextMenu() {

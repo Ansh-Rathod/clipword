@@ -151,18 +151,23 @@ struct IgnoreSettingsView: View {
                     .focused($focus, equals: .field)
             }
             .modifier(ArrowFocusRingModifier(forced: focus == .field && !fieldActive))
-            List(selection: $selectedApp) {
+            List {
                 ForEach(ignoredApps, id: \.self) { app in
                     HStack {
                         Text(app)
+                            .foregroundStyle(selectedApp == app && focus == .list ? Color.white : Color.primary)
                         Spacer()
                         Button("Remove", role: .destructive) { removeApp(app) }
                             .buttonStyle(.borderless)
+                            .foregroundStyle(selectedApp == app && focus == .list ? Color.white : Color.red)
                     }
                     .tag(app)
+                    .keyboardListRow(selected: selectedApp == app, listActive: focus == .list)
+                    .contentShape(Rectangle())
+                    .onTapGesture { selectedApp = app }
                 }
             }
-            .arrowFocus($focus, equals: .list)
+            .arrowListFocus($focus, equals: .list)
             .scrollToVisible(target: appListScrollTarget)
             .onDeleteCommand {
                 if let selectedApp { removeApp(selectedApp) }
@@ -183,18 +188,23 @@ struct IgnoreSettingsView: View {
             .modifier(ArrowFocusRingModifier(forced: focus == .field && !fieldActive))
             .focusable(!fieldActive)
             .focused($focus, equals: .field)
-            List(selection: $selectedType) {
+            List {
                 ForEach(ignoredPasteboardTypes, id: \.self) { type in
                     HStack {
                         Text(type)
+                            .foregroundStyle(selectedType == type && focus == .list ? Color.white : Color.primary)
                         Spacer()
                         Button("Remove", role: .destructive) { removeType(type) }
                             .buttonStyle(.borderless)
+                            .foregroundStyle(selectedType == type && focus == .list ? Color.white : Color.red)
                     }
                     .tag(type)
+                    .keyboardListRow(selected: selectedType == type, listActive: focus == .list)
+                    .contentShape(Rectangle())
+                    .onTapGesture { selectedType = type }
                 }
             }
-            .arrowFocus($focus, equals: .list)
+            .arrowListFocus($focus, equals: .list)
             .scrollToVisible(target: typeListScrollTarget)
             .onDeleteCommand {
                 if let selectedType { removeType(selectedType) }
@@ -215,18 +225,23 @@ struct IgnoreSettingsView: View {
             .modifier(ArrowFocusRingModifier(forced: focus == .field && !fieldActive))
             .focusable(!fieldActive)
             .focused($focus, equals: .field)
-            List(selection: $selectedRegex) {
+            List {
                 ForEach(ignoredRegexPatterns, id: \.self) { pattern in
                     HStack {
                         Text(pattern)
+                            .foregroundStyle(selectedRegex == pattern && focus == .list ? Color.white : Color.primary)
                         Spacer()
                         Button("Remove", role: .destructive) { removeRegex(pattern) }
                             .buttonStyle(.borderless)
+                            .foregroundStyle(selectedRegex == pattern && focus == .list ? Color.white : Color.red)
                     }
                     .tag(pattern)
+                    .keyboardListRow(selected: selectedRegex == pattern, listActive: focus == .list)
+                    .contentShape(Rectangle())
+                    .onTapGesture { selectedRegex = pattern }
                 }
             }
-            .arrowFocus($focus, equals: .list)
+            .arrowListFocus($focus, equals: .list)
             .scrollToVisible(target: regexListScrollTarget)
             .onDeleteCommand {
                 if let selectedRegex { removeRegex(selectedRegex) }
@@ -279,6 +294,7 @@ struct IgnoreSettingsView: View {
             fieldActive = false
             focus = next
             if case .tab(let tab) = next { selectedTab = tab }
+            if next == .list { ensureListSelection() }
             return .handled
         case .listMove:
             return .handled
@@ -293,6 +309,17 @@ struct IgnoreSettingsView: View {
             return .handled
         case .exitNext:
             return .handled
+        }
+    }
+
+    private func ensureListSelection() {
+        switch selectedTab {
+        case 0:
+            if selectedApp == nil { selectedApp = ignoredApps.first }
+        case 1:
+            if selectedType == nil { selectedType = ignoredPasteboardTypes.first }
+        default:
+            if selectedRegex == nil { selectedRegex = ignoredRegexPatterns.first }
         }
     }
 

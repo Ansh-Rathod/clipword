@@ -1,2 +1,15 @@
-# xcodebuild derived data (run.sh)
+# xcodebuild derived data (run.sh and local builds)
 .build/
+.derivedData/
+DerivedData/
+build/
+
+# temp
+temp/
+tmp/
+*.tmp
+
+# macOS / Xcode user state
+.DS_Store
+xcuserdata/
+*.xcuserstate

@@ -1,4 +1,5 @@
 import AppKit
+import Defaults
 import SwiftUI
 
 private final class KeyablePanel: NSPanel {
@@ -48,7 +49,7 @@ final class WindowManager {
         panel?.isVisible == true
     }
 
-    func toggleMainWindow(section: MainSection = .clipboard) {
+    func toggleMainWindow(section: MainSection = .clipboard, fromStatusItem: Bool = false) {
         if isVisible, appState?.mainSection == section {
             hideMainWindow()
             return
@@ -57,10 +58,10 @@ final class WindowManager {
             appState?.mainSection = section
             return
         }
-        showMainWindow(section: section)
+        showMainWindow(section: section, fromStatusItem: fromStatusItem)
     }
 
-    func showMainWindow(section: MainSection = .clipboard) {
+    func showMainWindow(section: MainSection = .clipboard, fromStatusItem: Bool = false) {
         // Stay menu-bar only — never flip to .regular (avoids Dock icon).
         NSApp.setActivationPolicy(.accessory)
         appState?.mainSection = section
@@ -115,7 +116,7 @@ final class WindowManager {
             previousApp = frontmost
         }
         applyChrome(to: panel)
-        positionNearStatusItem(panel)
+        positionPanel(panel, fromStatusItem: fromStatusItem)
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
@@ -128,6 +129,9 @@ final class WindowManager {
     }
 
     func hideMainWindow() {
+        if let panel {
+            Defaults[.popupLastFrame] = NSStringFromRect(panel.frame)
+        }
         panel?.orderOut(nil)
     }
 
@@ -186,39 +190,95 @@ final class WindowManager {
         }
     }
 
-    private func positionNearStatusItem(_ panel: NSPanel) {
+    private func positionPanel(_ panel: NSPanel, fromStatusItem: Bool) {
         let size = Self.windowSize
+        let screen = screenForPlacement(preferStatusItem: fromStatusItem)
+        let visible = screen.visibleFrame
         let frame: NSRect
 
-        if let button = statusButton, let buttonWindow = button.window {
-            let buttonRect = button.convert(button.bounds, to: nil)
-            let screenRect = buttonWindow.convertToScreen(buttonRect)
-            let screen = buttonWindow.screen ?? NSScreen.main
-            let visible = screen?.visibleFrame ?? .zero
-
-            var x = screenRect.midX - size.width / 2
-            var y = screenRect.minY - size.height - 8
-
-            if let screen {
+        if fromStatusItem, let statusFrame = frameNearStatusItem(size: size) {
+            frame = statusFrame
+        } else {
+            switch Defaults[.popupPosition] {
+            case .cursor:
+                let mouse = NSEvent.mouseLocation
+                var x = mouse.x - size.width / 2
+                var y = mouse.y - size.height - 20
                 x = min(max(x, visible.minX + 8), visible.maxX - size.width - 8)
-                if y < visible.minY {
-                    y = screenRect.maxY + 8
+                y = min(max(y, visible.minY + 8), visible.maxY - size.height - 8)
+                frame = NSRect(x: x, y: y, width: size.width, height: size.height)
+            case .menuBar:
+                frame = frameNearStatusItem(size: size) ?? NSRect(
+                    x: visible.maxX - size.width - 20,
+                    y: visible.maxY - size.height - 12,
+                    width: size.width,
+                    height: size.height
+                )
+            case .center:
+                frame = NSRect(
+                    x: visible.midX - size.width / 2,
+                    y: visible.midY - size.height / 2,
+                    width: size.width,
+                    height: size.height
+                )
+            case .lastPosition:
+                if let saved = lastSavedFrame() {
+                    frame = clamped(saved, size: size, to: visible)
+                } else {
+                    frame = NSRect(
+                        x: visible.midX - size.width / 2,
+                        y: visible.midY - size.height / 2,
+                        width: size.width,
+                        height: size.height
+                    )
                 }
             }
-            frame = NSRect(x: x, y: y, width: size.width, height: size.height)
-        } else if let screen = NSScreen.main {
-            let visible = screen.visibleFrame
-            frame = NSRect(
-                x: visible.midX - size.width / 2,
-                y: visible.midY - size.height / 2,
-                width: size.width,
-                height: size.height
-            )
-        } else {
-            return
         }
 
         panel.setFrame(frame, display: true)
+    }
+
+    private func screenForPlacement(preferStatusItem: Bool) -> NSScreen {
+        if preferStatusItem, let screen = statusButton?.window?.screen {
+            return screen
+        }
+        let mouse = NSEvent.mouseLocation
+        return NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
+            ?? NSScreen.main
+            ?? NSScreen.screens[0]
+    }
+
+    private func frameNearStatusItem(size: NSSize) -> NSRect? {
+        guard let button = statusButton, let buttonWindow = button.window else { return nil }
+        let buttonRect = button.convert(button.bounds, to: nil)
+        let screenRect = buttonWindow.convertToScreen(buttonRect)
+        let screen = buttonWindow.screen ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? .zero
+
+        var x = screenRect.midX - size.width / 2
+        var y = screenRect.minY - size.height - 8
+
+        if let screen {
+            x = min(max(x, visible.minX + 8), visible.maxX - size.width - 8)
+            if y < visible.minY {
+                y = screenRect.maxY + 8
+            }
+        }
+        return NSRect(x: x, y: y, width: size.width, height: size.height)
+    }
+
+    private func lastSavedFrame() -> NSRect? {
+        let raw = Defaults[.popupLastFrame]
+        guard !raw.isEmpty else { return nil }
+        let rect = NSRectFromString(raw)
+        return rect.width > 0 && rect.height > 0 ? rect : nil
+    }
+
+    private func clamped(_ frame: NSRect, size: NSSize, to visible: NSRect) -> NSRect {
+        var origin = frame.origin
+        origin.x = min(max(origin.x, visible.minX + 8), visible.maxX - size.width - 8)
+        origin.y = min(max(origin.y, visible.minY + 8), visible.maxY - size.height - 8)
+        return NSRect(origin: origin, size: size)
     }
 }
 

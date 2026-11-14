@@ -38,17 +38,19 @@ struct StorageSettingsView: View {
             Section("History") {
                 Stepper("History size: \(historySize)", value: $historySize, in: 1...999)
                     .arrowFocus($focus, equals: .historySize)
-                Picker("Keep history for", selection: $historyRetention) {
-                    ForEach(HistoryRetention.allCases) { retention in
-                        Text(retention.label).tag(retention)
-                    }
-                }
+                KeyboardMenuPicker(
+                    prompt: "Keep history for",
+                    selection: $historyRetention,
+                    options: HistoryRetention.allCases,
+                    title: { $0.label }
+                )
                 .arrowFocus($focus, equals: .retention)
-                Picker("Sort by", selection: $sortOrder) {
-                    ForEach(SortOrder.allCases) { order in
-                        Text(order.label).tag(order)
-                    }
-                }
+                KeyboardMenuPicker(
+                    prompt: "Sort by",
+                    selection: $sortOrder,
+                    options: SortOrder.allCases,
+                    title: { $0.label }
+                )
                 .arrowFocus($focus, equals: .sortOrder)
                 LabeledContent("Database size", value: historyStore.databaseSize)
             }

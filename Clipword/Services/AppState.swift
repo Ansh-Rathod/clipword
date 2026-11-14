@@ -68,8 +68,8 @@ final class AppState {
         registerPasteStackMonitor()
     }
 
-    func toggleWindow(section: MainSection = .clipboard) {
-        WindowManager.shared.toggleMainWindow(section: section)
+    func toggleWindow(section: MainSection = .clipboard, fromStatusItem: Bool = false) {
+        WindowManager.shared.toggleMainWindow(section: section, fromStatusItem: fromStatusItem)
     }
 
     /// ⌥Space snippet palette. Hidden main window stays untouched; the palette
@@ -82,8 +82,8 @@ final class AppState {
         SuggestionPanelController.shared.toggle(appState: self)
     }
 
-    func showWindow(section: MainSection = .clipboard) {
-        WindowManager.shared.showMainWindow(section: section)
+    func showWindow(section: MainSection = .clipboard, fromStatusItem: Bool = false) {
+        WindowManager.shared.showMainWindow(section: section, fromStatusItem: fromStatusItem)
     }
 
     func hideWindow() {

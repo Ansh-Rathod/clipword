@@ -125,7 +125,9 @@ extension Defaults.Keys {
     static let pasteAutomatically = Key<Bool>("pasteAutomatically", default: true)
     static let pasteWithoutFormatting = Key<Bool>("pasteWithoutFormatting", default: false)
     static let searchMode = Key<SearchMode>("searchMode", default: .mixed)
-    static let popupPosition = Key<PopupPosition>("popupPosition", default: .cursor)
+    static let popupPosition = Key<PopupPosition>("popupPosition", default: .center)
+    /// Serialized `NSRect` of the last panel frame, used when `popupPosition` is `.lastPosition`.
+    static let popupLastFrame = Key<String>("popupLastFrame", default: "")
     static let pinPosition = Key<PinPosition>("pinPosition", default: .top)
     static let imageMaxHeight = Key<Double>("imageMaxHeight", default: 40)
     static let autoPreview = Key<Bool>("autoPreview", default: true)

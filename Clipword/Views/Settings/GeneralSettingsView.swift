@@ -15,7 +15,7 @@ extension KeyboardShortcuts.Name {
 }
 
 private enum GeneralFocus: Hashable {
-    case launchAtLogin, openShortcut, inlineShortcut, pinShortcut, bookmarkShortcut, deleteShortcut
+    case launchAtLogin, popupPosition, openShortcut, inlineShortcut, pinShortcut, bookmarkShortcut, deleteShortcut
     case searchMode, pasteAuto, pastePlain, inlineToggle, inlineTrigger, inlineMinChars
 }
 
@@ -27,6 +27,7 @@ struct GeneralSettingsView: View {
     @Default(.inlineSuggestionsEnabled) private var inlineSuggestionsEnabled
     @Default(.inlineMinChars) private var inlineMinChars
     @Default(.inlineTriggerMode) private var inlineTriggerMode
+    @Default(.popupPosition) private var popupPosition
     @Environment(\.arrowFocusExit) private var arrowFocusExit
     @Environment(\.arrowFocusEnterToken) private var enterToken
     @Environment(\.contentShouldTakeFocus) private var contentShouldTakeFocus
@@ -36,7 +37,7 @@ struct GeneralSettingsView: View {
     @FocusState private var focus: GeneralFocus?
 
     private let order: [GeneralFocus] = [
-        .launchAtLogin, .openShortcut, .inlineShortcut, .pinShortcut, .bookmarkShortcut, .deleteShortcut,
+        .launchAtLogin, .popupPosition, .openShortcut, .inlineShortcut, .pinShortcut, .bookmarkShortcut, .deleteShortcut,
         .searchMode, .pasteAuto, .pastePlain, .inlineToggle, .inlineTrigger, .inlineMinChars
     ]
 
@@ -45,8 +46,8 @@ struct GeneralSettingsView: View {
     /// visible. The first section anchors to its own first row.
     private func sectionAnchor(for focus: GeneralFocus) -> GeneralFocus {
         switch focus {
-        case .launchAtLogin: return .launchAtLogin
-        case .openShortcut, .inlineShortcut, .pinShortcut, .bookmarkShortcut, .deleteShortcut: return .launchAtLogin
+        case .launchAtLogin, .popupPosition: return .launchAtLogin
+        case .openShortcut, .inlineShortcut, .pinShortcut, .bookmarkShortcut, .deleteShortcut: return .popupPosition
         case .searchMode: return .deleteShortcut
         case .pasteAuto, .pastePlain: return .searchMode
         case .inlineToggle, .inlineTrigger, .inlineMinChars: return .pastePlain
@@ -62,6 +63,16 @@ struct GeneralSettingsView: View {
                     .onChange(of: launchAtLogin) { _, enabled in
                         LaunchAtLoginHelper.setEnabled(enabled)
                     }
+            }
+            Section("Window") {
+                KeyboardMenuPicker(
+                    prompt: "Open at",
+                    selection: $popupPosition,
+                    options: PopupPosition.allCases,
+                    title: { $0.label }
+                )
+                .arrowFocus($focus, equals: .popupPosition)
+                .id(GeneralFocus.popupPosition)
             }
             Section("Shortcuts") {
                 LabeledContent("Open Clipword") {
@@ -101,11 +112,12 @@ struct GeneralSettingsView: View {
                 shortcutRow("Esc", "Leave text field / to sidebar / close")
             }
             Section("Search") {
-                Picker("Search mode", selection: $searchMode) {
-                    ForEach(SearchMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
-                    }
-                }
+                KeyboardMenuPicker(
+                    prompt: "Search mode",
+                    selection: $searchMode,
+                    options: SearchMode.allCases,
+                    title: { $0.label }
+                )
                 .arrowFocus($focus, equals: .searchMode)
                 .id(GeneralFocus.searchMode)
             }
@@ -121,11 +133,12 @@ struct GeneralSettingsView: View {
                 Toggle("Enable snippet suggestions", isOn: $inlineSuggestionsEnabled)
                     .arrowFocus($focus, equals: .inlineToggle)
                     .id(GeneralFocus.inlineToggle)
-                Picker("Trigger", selection: $inlineTriggerMode) {
-                    ForEach(InlineTriggerMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
-                    }
-                }
+                KeyboardMenuPicker(
+                    prompt: "Trigger",
+                    selection: $inlineTriggerMode,
+                    options: InlineTriggerMode.allCases,
+                    title: { $0.label }
+                )
                 .arrowFocus($focus, equals: .inlineTrigger)
                 .id(GeneralFocus.inlineTrigger)
                 .disabled(!inlineSuggestionsEnabled)
@@ -194,6 +207,15 @@ struct GeneralSettingsView: View {
             launchAtLogin.toggle()
             LaunchAtLoginHelper.setEnabled(launchAtLogin)
             return .handled
+        case .popupPosition:
+            KeyboardContextMenu.popChoices(
+                title: { $0.label },
+                current: popupPosition,
+                choices: PopupPosition.allCases
+            ) { popupPosition = $0 }
+            return .handled
+        case .openShortcut, .inlineShortcut, .pinShortcut, .bookmarkShortcut, .deleteShortcut:
+            return KeyboardNativeFocus.focusEmbeddedControl() ? .handled : .ignored
         case .searchMode:
             KeyboardContextMenu.popChoices(
                 title: { $0.label },

@@ -184,25 +184,25 @@ struct BookmarksView: View {
 
     private var toolbar: some View {
         HStack(spacing: 12) {
-            Picker("Type", selection: $activeCategory) {
-                Text("All Types").tag(ClipboardCategory?.none)
-                ForEach(ClipboardCategory.allCases) { category in
-                    Text(category.label).tag(Optional(category))
-                }
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
+            KeyboardMenuPicker(
+                selection: $activeCategory,
+                options: [ClipboardCategory?.none] + ClipboardCategory.allCases.map { Optional($0) },
+                title: { $0?.label ?? "All Types" }
+            )
             .frame(maxWidth: 140)
             .arrowFocus($focus, equals: .typeFilter)
 
-            Picker("App", selection: $activeAppBundleId) {
-                Text("All Apps").tag(String?.none)
-                ForEach(availableApps) { app in
-                    Text("\(app.name) (\(app.count))").tag(Optional(app.bundleId))
+            KeyboardMenuPicker(
+                selection: $activeAppBundleId,
+                options: [String?.none] + availableApps.map { Optional($0.bundleId) },
+                title: { bundleId in
+                    guard let bundleId else { return "All Apps" }
+                    if let app = availableApps.first(where: { $0.bundleId == bundleId }) {
+                        return "\(app.name) (\(app.count))"
+                    }
+                    return bundleId
                 }
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
+            )
             .frame(maxWidth: 160)
             .arrowFocus($focus, equals: .appFilter)
 
@@ -229,18 +229,28 @@ struct BookmarksView: View {
     }
 
     private var bookmarksList: some View {
-        List(selection: Bindable(historyStore).selectedBookmarkID) {
+        List {
             ForEach(groupedItems, id: \.0) { section, items in
                 Section {
                     ForEach(items) { item in
-                        BookmarkRowView(item: item)
-                            .tag(item.id)
-                            .contentShape(Rectangle())
-                            .onTapGesture(count: 2) {
+                        BookmarkRowView(
+                            item: item,
+                            emphasized: historyStore.selectedBookmarkID == item.id && focus == .list
+                        )
+                        .tag(item.id)
+                        .keyboardListRow(
+                            selected: historyStore.selectedBookmarkID == item.id,
+                            listActive: focus == .list
+                        )
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            historyStore.selectedBookmarkID = item.id
+                            if NSApp.currentEvent?.clickCount == 2 {
                                 historyStore.selectBookmark(item, paste: NSEvent.modifierFlags.contains(.option))
                                 appState.hideWindow()
                             }
-                            .contextMenu {
+                        }
+                        .contextMenu {
                                 Button("Copy") { historyStore.selectBookmark(item, paste: false) }
                                     .keyboardShortcut("c")
                                 Button("Paste") {
@@ -455,12 +465,12 @@ struct BookmarksView: View {
 
 struct BookmarkRowView: View {
     let item: BookmarkItem
+    var emphasized: Bool = false
 
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: rowIcon)
                 .font(.body)
-                .foregroundStyle(.primary)
                 .frame(width: 18)
 
             Text(item.displayTitle)
@@ -471,8 +481,9 @@ struct BookmarkRowView: View {
 
             Image(systemName: "bookmark.fill")
                 .font(.caption2)
-                .foregroundStyle(.blue)
+                .foregroundStyle(emphasized ? Color.white.opacity(0.95) : Color.blue)
         }
+        .foregroundStyle(emphasized ? Color.white : Color.primary)
         .padding(.vertical, 2)
     }
 

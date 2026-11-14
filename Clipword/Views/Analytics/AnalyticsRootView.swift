@@ -52,13 +52,12 @@ struct AnalyticsRootView: View {
 
     private var toolbar: some View {
         HStack {
-            Picker("Section", selection: $section) {
-                ForEach(AnalyticsSection.allCases) { item in
-                    Text(item.title).tag(item)
-                }
-            }
-            .pickerStyle(.menu)
-            .frame(maxWidth: 200)
+            KeyboardMenuPicker(
+                selection: $section,
+                options: AnalyticsSection.allCases,
+                title: { $0.title }
+            )
+            .frame(maxWidth: 200, alignment: .leading)
             .arrowFocus($focus, equals: .section)
 
             Spacer()
@@ -76,7 +75,9 @@ struct AnalyticsRootView: View {
                 }
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
             .help("Time range")
+            .arrowFocus($focus, equals: .range)
 
             if preset == .custom {
                 DatePicker("Start", selection: $customStart, displayedComponents: .date)
@@ -86,7 +87,6 @@ struct AnalyticsRootView: View {
             }
         }
         .frame(maxWidth: 420)
-        .arrowFocus($focus, equals: .range)
     }
 
     var body: some View {
@@ -154,7 +154,7 @@ struct AnalyticsRootView: View {
                 choices: TimeRangePreset.allCases
             ) { preset = $0 }
         case .customStart, .customEnd:
-            return .ignored
+            return KeyboardNativeFocus.focusEmbeddedControl() ? .handled : .ignored
         }
         return .handled
     }

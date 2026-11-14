@@ -53,7 +53,7 @@ struct MainRootView: View {
             if showSidebar {
                 sidebar
                     .frame(width: 180)
-                    .arrowFocus($chromeFocus, equals: .sidebar)
+                    .arrowListFocus($chromeFocus, equals: .sidebar)
                     .transition(.move(edge: .leading).combined(with: .opacity))
                 Divider()
             }
@@ -171,24 +171,32 @@ struct MainRootView: View {
     }
 
     private var sidebar: some View {
-        @Bindable var appState = appState
-        return List(selection: $appState.mainSection) {
+        List {
             Section {
                 ForEach(MainSection.primary) { section in
-                    Label(section.title, systemImage: section.systemImage)
-                        .tag(section)
+                    sidebarRow(section)
                 }
             }
             Section("Settings") {
                 ForEach(MainSection.settings) { section in
-                    Label(section.title, systemImage: section.systemImage)
-                        .tag(section)
+                    sidebarRow(section)
                 }
             }
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
         .toolbar(.hidden)
+    }
+
+    private func sidebarRow(_ section: MainSection) -> some View {
+        let selected = appState.mainSection == section
+        let active = chromeFocus == .sidebar
+        return Label(section.title, systemImage: section.systemImage)
+            .tag(section)
+            .foregroundStyle(selected && active ? Color.white : Color.primary)
+            .keyboardListRow(selected: selected, listActive: active)
+            .contentShape(Rectangle())
+            .onTapGesture { appState.mainSection = section }
     }
 
     @ViewBuilder

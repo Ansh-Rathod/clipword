@@ -146,26 +146,26 @@ struct ClipboardPopupView: View {
 
     private var toolbar: some View {
         HStack(spacing: 12) {
-            Picker("Type", selection: Bindable(historyStore).activeCategory) {
-                Text("All Types").tag(ClipboardCategory?.none)
-                ForEach(ClipboardCategory.allCases) { category in
-                    Text(category.label).tag(Optional(category))
-                }
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
+            KeyboardMenuPicker(
+                selection: Bindable(historyStore).activeCategory,
+                options: [ClipboardCategory?.none] + ClipboardCategory.allCases.map { Optional($0) },
+                title: { $0?.label ?? "All Types" }
+            )
             .frame(maxWidth: 140)
             .arrowFocus($focus, equals: .typeFilter)
             .help("Filter by type")
 
-            Picker("App", selection: Bindable(historyStore).activeAppBundleId) {
-                Text("All Apps").tag(String?.none)
-                ForEach(historyStore.availableApps) { app in
-                    Text("\(app.name) (\(app.count))").tag(Optional(app.bundleId))
+            KeyboardMenuPicker(
+                selection: Bindable(historyStore).activeAppBundleId,
+                options: [String?.none] + historyStore.availableApps.map { Optional($0.bundleId) },
+                title: { bundleId in
+                    guard let bundleId else { return "All Apps" }
+                    if let app = historyStore.availableApps.first(where: { $0.bundleId == bundleId }) {
+                        return "\(app.name) (\(app.count))"
+                    }
+                    return bundleId
                 }
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
+            )
             .frame(maxWidth: 160)
             .arrowFocus($focus, equals: .appFilter)
             .help("Filter by app")
@@ -205,18 +205,28 @@ struct ClipboardPopupView: View {
     }
 
     private var historyList: some View {
-        List(selection: Bindable(historyStore).selectedItemID) {
+        List {
             ForEach(groupedItems, id: \.0) { section, items in
                 Section {
                     ForEach(items) { item in
-                        HistoryRowView(item: item)
-                            .tag(item.id)
-                            .contentShape(Rectangle())
-                            .onTapGesture(count: 2) {
+                        HistoryRowView(
+                            item: item,
+                            emphasized: historyStore.selectedItemID == item.id && focus == .list
+                        )
+                        .tag(item.id)
+                        .keyboardListRow(
+                            selected: historyStore.selectedItemID == item.id,
+                            listActive: focus == .list
+                        )
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            historyStore.selectedItemID = item.id
+                            if NSApp.currentEvent?.clickCount == 2 {
                                 historyStore.select(item, paste: NSEvent.modifierFlags.contains(.option))
                                 appState.hideWindow()
                             }
-                            .contextMenu { itemContextMenu(for: item) }
+                        }
+                        .contextMenu { itemContextMenu(for: item) }
                     }
                 } header: {
                     Text(section)

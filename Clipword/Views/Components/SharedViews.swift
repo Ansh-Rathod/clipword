@@ -107,20 +107,48 @@ struct ArrowFocusRingModifier: ViewModifier {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .allowsHitTesting(false)
             }
-            .overlay {
-                RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(Color.accentColor, lineWidth: 2)
-                    .opacity(active ? 1 : 0)
-                    .padding(-2)
+            .background {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.accentColor.opacity(active ? 0.14 : 0))
             }
-            .animation(.easeInOut(duration: 0.1), value: active)
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(Color.accentColor.opacity(active ? 0.85 : 0), lineWidth: 1.5)
+            }
+            .animation(.easeInOut(duration: 0.12), value: active)
     }
 }
 
 /// Tracks the NSView under the arrow-focused control so menus can pop beside it.
 @MainActor
 enum ArrowFocusMenuAnchor {
-    static var view: NSView?
+    static weak var view: NSView?
+}
+
+/// Holds a persistent NSView pointer for a control that can open a menu on click
+/// even when it is not the keyboard-focused view.
+@MainActor
+final class MenuAnchorBox {
+    weak var view: NSView?
+}
+
+/// Accent fill on the selected row while the list has keyboard focus; a quieter
+/// fill when the row is selected but the list is not the active control.
+struct KeyboardListRowChrome: View {
+    let isSelected: Bool
+    let isActive: Bool
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(fillColor)
+            .padding(.vertical, 1)
+    }
+
+    private var fillColor: Color {
+        if isSelected && isActive { return Color.accentColor }
+        if isSelected { return Color.primary.opacity(0.10) }
+        return .clear
+    }
 }
 
 private final class ArrowFocusAnchorNSView: NSView {
@@ -166,6 +194,41 @@ private struct ArrowFocusAnchorProbe: NSViewRepresentable {
     }
 }
 
+private final class PersistentMenuAnchorNSView: NSView {
+    weak var box: MenuAnchorBox?
+
+    override func layout() {
+        super.layout()
+        box?.view = self
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        box?.view = self
+    }
+}
+
+private struct PersistentMenuAnchorProbe: NSViewRepresentable {
+    let box: MenuAnchorBox
+
+    func makeNSView(context: Context) -> PersistentMenuAnchorNSView {
+        let view = PersistentMenuAnchorNSView()
+        view.box = box
+        return view
+    }
+
+    func updateNSView(_ nsView: PersistentMenuAnchorNSView, context: Context) {
+        nsView.box = box
+        box.view = nsView
+    }
+
+    static func dismantleNSView(_ nsView: PersistentMenuAnchorNSView, coordinator: ()) {
+        if nsView.box?.view === nsView {
+            nsView.box?.view = nil
+        }
+    }
+}
+
 extension View {
     func arrowFocus<F: Hashable>(_ focus: FocusState<F?>.Binding, equals value: F) -> some View {
         self
@@ -185,6 +248,22 @@ extension View {
     /// Highlight ring without focusing an editable TextField (Return enters edit).
     func arrowHighlight<F: Hashable>(_ focus: F?, equals value: F) -> some View {
         self.modifier(ArrowFocusRingModifier(forced: focus == value))
+    }
+
+    /// Publishes this view as the menu anchor while `active` is true (selected list row).
+    func keyboardMenuAnchor(_ active: Bool) -> some View {
+        background {
+            ArrowFocusAnchorProbe(active: active)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
+        }
+    }
+
+    func keyboardListRow(selected: Bool, listActive: Bool) -> some View {
+        let active = selected && listActive
+        return self
+            .keyboardMenuAnchor(active)
+            .listRowBackground(KeyboardListRowChrome(isSelected: selected, isActive: active))
     }
 
     /// Keeps the row identified by `target` visible whenever it changes.
@@ -305,8 +384,96 @@ func advanceArrowFocus<F: Hashable>(
 }
 
 @MainActor
+enum KeyboardNativeFocus {
+    /// Makes an embedded AppKit editor (shortcut recorder, date picker) first responder.
+    @discardableResult
+    static func focusEmbeddedControl() -> Bool {
+        guard let anchor = ArrowFocusMenuAnchor.view,
+              let window = anchor.window else { return false }
+
+        func isControl(_ view: NSView) -> Bool {
+            view is NSSearchField || view is NSDatePicker || view is NSComboBox
+        }
+
+        func find(in view: NSView) -> NSView? {
+            if view !== anchor, isControl(view) { return view }
+            for subview in view.subviews {
+                if let hit = find(in: subview) { return hit }
+            }
+            return nil
+        }
+
+        var node: NSView? = anchor.superview
+        while let view = node {
+            if let hit = find(in: view) {
+                return window.makeFirstResponder(hit)
+            }
+            node = view.superview
+        }
+        return false
+    }
+}
+
+/// Pull-down that opens `KeyboardContextMenu` under the control, for both click
+/// and Return — native `Picker` menus track the mouse cursor on keyboard open.
+struct KeyboardMenuPicker<Value: Hashable>: View {
+    var prompt: String?
+    @Binding var selection: Value
+    let options: [Value]
+    var title: (Value) -> String
+
+    @State private var anchor = MenuAnchorBox()
+
+    var body: some View {
+        Group {
+            if let prompt {
+                LabeledContent(prompt) { pickerButton }
+            } else {
+                pickerButton
+            }
+        }
+    }
+
+    private var pickerButton: some View {
+        HStack(spacing: 6) {
+            Text(title(selection))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .pointingHandCursor()
+        .background {
+            PersistentMenuAnchorProbe(box: anchor)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
+        }
+        .onTapGesture { showMenu() }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(prompt ?? title(selection))
+        .accessibilityValue(title(selection))
+    }
+
+    func showMenu() {
+        KeyboardContextMenu.popChoices(
+            title: title,
+            current: selection,
+            choices: options,
+            relativeTo: anchor.view
+        ) { selection = $0 }
+    }
+}
+
+@MainActor
 enum KeyboardContextMenu {
     private static var keepAlive: MenuActions?
+    private static var lastPopAt: TimeInterval = 0
 
     final class MenuActions: NSObject {
         var handlers: [Int: () -> Void] = [:]
@@ -325,7 +492,8 @@ enum KeyboardContextMenu {
         bookmarkTitle: String,
         togglePin: @escaping () -> Void,
         pinTitle: String,
-        delete: @escaping () -> Void
+        delete: @escaping () -> Void,
+        relativeTo view: NSView? = nil
     ) {
         pop(buildMenu { add, separator in
             add("Copy", "c", .command, copy)
@@ -337,14 +505,15 @@ enum KeyboardContextMenu {
             add(pinTitle, "p", .option, togglePin)
             separator()
             add("Delete", "\u{08}", .command, delete)
-        })
+        }, relativeTo: view)
     }
 
     static func popBookmark(
         copy: @escaping () -> Void,
         paste: @escaping () -> Void,
         edit: @escaping () -> Void,
-        remove: @escaping () -> Void
+        remove: @escaping () -> Void,
+        relativeTo view: NSView? = nil
     ) {
         pop(buildMenu { add, separator in
             add("Copy", "c", .command, copy)
@@ -352,12 +521,13 @@ enum KeyboardContextMenu {
             separator()
             add("Edit…", "e", .command, edit)
             add("Remove Bookmark", "\u{08}", .command, remove)
-        })
+        }, relativeTo: view)
     }
 
     static func popCategoryFilter(
         current: ClipboardCategory?,
-        select: @escaping (ClipboardCategory?) -> Void
+        select: @escaping (ClipboardCategory?) -> Void,
+        relativeTo view: NSView? = nil
     ) {
         pop(buildMenu { add, separator in
             add(current == nil ? "✓ All Types" : "All Types", "", [], { select(nil) })
@@ -366,13 +536,14 @@ enum KeyboardContextMenu {
                 let title = category == current ? "✓ \(category.label)" : category.label
                 add(title, "", [], { select(category) })
             }
-        })
+        }, relativeTo: view)
     }
 
     static func popAppFilter(
         apps: [AppFilterOption],
         current: String?,
-        select: @escaping (String?) -> Void
+        select: @escaping (String?) -> Void,
+        relativeTo view: NSView? = nil
     ) {
         pop(buildMenu { add, separator in
             add(current == nil ? "✓ All Apps" : "All Apps", "", [], { select(nil) })
@@ -384,7 +555,7 @@ enum KeyboardContextMenu {
                     add(title, "", [], { select(app.bundleId) })
                 }
             }
-        })
+        }, relativeTo: view)
     }
 
     /// Pop a menu of choices with a checkmark on the current one (arrow-key navigable).
@@ -392,6 +563,7 @@ enum KeyboardContextMenu {
         title: (T) -> String,
         current: T?,
         choices: [T],
+        relativeTo view: NSView? = nil,
         select: @escaping (T) -> Void
     ) {
         pop(buildMenu { add, _ in
@@ -399,7 +571,7 @@ enum KeyboardContextMenu {
                 let label = title(choice)
                 add(current == choice ? "✓ \(label)" : label, "", [], { select(choice) })
             }
-        })
+        }, relativeTo: view)
     }
 
     private static func buildMenu(
@@ -428,19 +600,51 @@ enum KeyboardContextMenu {
         return menu
     }
 
-    private static func pop(_ menu: NSMenu) {
-        if let anchor = ArrowFocusMenuAnchor.view, anchor.window != nil, !anchor.bounds.isEmpty {
-            let y = anchor.isFlipped ? anchor.bounds.maxY + 2 : anchor.bounds.minY - 2
-            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: y), in: anchor)
+    private static func pop(_ menu: NSMenu, relativeTo view: NSView? = nil) {
+        // Return on a focused control can fire both the control action and the
+        // page's onKeyPress handler; ignore a second pop while the first is up.
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - lastPopAt < 0.2 { return }
+        lastPopAt = now
+
+        let anchor = view ?? ArrowFocusMenuAnchor.view
+        let window = anchor?.window ?? NSApp.keyWindow
+
+        // Key events store the mouse cursor in `locationInWindow`. NSMenu uses
+        // the current event unless we synthesize a click on the control itself.
+        if let anchor, let window, !anchor.bounds.isEmpty {
+            let rectInWindow = anchor.convert(anchor.bounds, to: nil)
+            let clickInWindow = NSPoint(x: rectInWindow.minX, y: rectInWindow.minY)
+            if let event = NSEvent.mouseEvent(
+                with: .leftMouseDown,
+                location: clickInWindow,
+                modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber,
+                context: nil,
+                eventNumber: 0,
+                clickCount: 1,
+                pressure: 1
+            ) {
+                NSMenu.popUpContextMenu(menu, with: event, for: anchor)
+                return
+            }
+            let screenRect = window.convertToScreen(rectInWindow)
+            menu.popUp(
+                positioning: nil,
+                at: NSPoint(x: screenRect.minX, y: screenRect.minY - 2),
+                in: nil
+            )
             return
         }
 
-        guard let contentView = NSApp.keyWindow?.contentView else { return }
-        menu.popUp(
-            positioning: nil,
-            at: NSPoint(x: 16, y: contentView.isFlipped ? 56 : contentView.bounds.maxY - 56),
-            in: contentView
-        )
+        if let window {
+            menu.popUp(
+                positioning: nil,
+                at: NSPoint(x: window.frame.minX + 16, y: window.frame.maxY - 72),
+                in: nil
+            )
+        }
     }
 }
 
