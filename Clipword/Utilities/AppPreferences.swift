@@ -128,6 +128,8 @@ extension Defaults.Keys {
     /// Legacy category migration ran at least once on this install (persisted so
     /// launch never re-decodes every item's blob).
     static let didBackfillCategories = Key<Bool>("didBackfillCategories", default: false)
+    /// HTML copies of a URL used to be stored as styled text; one-shot reclass.
+    static let didReclassifyHTMLLinks = Key<Bool>("didReclassifyHTMLLinks", default: false)
     /// Migration flags
     static let didRemoveLegacyOptionHotkeys = Key<Bool>("didRemoveLegacyOptionHotkeys", default: false)
 }

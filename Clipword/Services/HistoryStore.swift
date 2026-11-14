@@ -48,6 +48,7 @@ final class HistoryStore {
         reload()
         reloadBookmarks()
         reloadFolders()
+        reclassifyHTMLLinksIfNeeded()
         scheduleRetentionPrune()
     }
 
@@ -94,6 +95,27 @@ final class HistoryStore {
             }
         }
         retentionTimer?.tolerance = 10 * 60
+    }
+
+    /// Browsers copy URLs as HTML, so older items were stored as styled text.
+    private func reclassifyHTMLLinksIfNeeded() {
+        guard !Defaults[.didReclassifyHTMLLinks] else { return }
+        var changed = false
+        for item in items where item.category == .styledText || item.category == .plainText {
+            guard ContentClassifier.isLinkText(item.plainText) else { continue }
+            item.category = .link
+            changed = true
+        }
+        for item in bookmarks where item.category == .styledText || item.category == .plainText {
+            guard ContentClassifier.isLinkText(item.plainText) else { continue }
+            item.category = .link
+            changed = true
+        }
+        if changed {
+            try? modelContext.save()
+            applyFilters()
+        }
+        Defaults[.didReclassifyHTMLLinks] = true
     }
 
     private func scheduleCategoryBackfill() {

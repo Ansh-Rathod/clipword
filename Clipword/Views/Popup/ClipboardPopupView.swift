@@ -58,8 +58,7 @@ struct ClipboardDetailPane: View {
                 key: PaletteScrollKey.preview(item.id),
                 restoreToken: appState.windowPresentationToken
             )
-        } else if item.category == .link,
-                  let url = ContentClassifier.previewableURL(from: item.plainText) {
+        } else if let url = ContentClassifier.linkPreviewURL(from: item.plainText) {
             LinkPreviewCard(
                 url: url,
                 fallbackText: item.plainText ?? url.absoluteString,
@@ -107,8 +106,7 @@ struct ClipboardDetailPane: View {
             infoRow("Content type") {
                 Text(contentTypeLabel)
             }
-            if item.category == .link,
-               let url = ContentClassifier.previewableURL(from: item.plainText) {
+            if let url = ContentClassifier.linkPreviewURL(from: item.plainText) {
                 infoRow("Address") {
                     Button(url.absoluteString) {
                         NSWorkspace.shared.open(url)
@@ -286,7 +284,7 @@ struct ClipboardDetailPane: View {
     }
 
     private var contentTypeLabel: String {
-        if item.category == .link { return "Link" }
+        if item.category == .link || ContentClassifier.isLinkText(item.plainText) { return "Link" }
         switch item.contentType {
         case .text: return item.category == .styledText ? "Text (Formatted)" : "Text"
         case .rtf: return "Text (Formatted)"

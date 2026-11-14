@@ -28,9 +28,7 @@ enum ContentClassifier {
             return .file
         case .image:
             return .image
-        case .rtf, .html:
-            return .styledText
-        case .text:
+        case .rtf, .html, .text:
             break
         }
 
@@ -38,8 +36,14 @@ enum ContentClassifier {
             return .color
         }
 
+        // Browsers copy links as HTML (`<a href=...>`), so HTML/RTF must still
+        // be eligible as a link when the visible text is a URL.
         if hasLinkType(pasteboardTypes) || isLinkText(snapshot.plainText) {
             return .link
+        }
+
+        if snapshot.contentType == .rtf || snapshot.contentType == .html {
+            return .styledText
         }
 
         if isCode(pasteboardTypes: pasteboardTypes, text: snapshot.plainText) {
@@ -84,9 +88,7 @@ enum ContentClassifier {
 
     /// http(s) URL suitable for fetching a link preview, if the clip is a link.
     static func previewableURL(from text: String?) -> URL? {
-        guard let text = classifyHead(text) else { return nil }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
+        guard let trimmed = normalizedLinkText(text), !trimmed.isEmpty else { return nil }
 
         if let url = URL(string: trimmed), isPreviewable(url) {
             return url
@@ -102,15 +104,20 @@ enum ContentClassifier {
         return nil
     }
 
+    /// URL preview for the detail pane: the clip itself must be a link, not
+    /// merely contain one inside a longer snippet.
+    static func linkPreviewURL(from text: String?) -> URL? {
+        guard isLinkText(text) else { return nil }
+        return previewableURL(from: text)
+    }
+
     private static func isPreviewable(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) else { return false }
         return url.host != nil
     }
 
-    private static func isLinkText(_ text: String?) -> Bool {
-        guard let text = classifyHead(text) else { return false }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
+    static func isLinkText(_ text: String?) -> Bool {
+        guard let trimmed = normalizedLinkText(text), !trimmed.isEmpty else { return false }
 
         if let url = URL(string: trimmed), url.scheme != nil,
            ["http", "https", "ftp", "mailto"].contains(url.scheme?.lowercased() ?? "") {
@@ -129,6 +136,23 @@ enum ContentClassifier {
         }
 
         return false
+    }
+
+    private static func normalizedLinkText(_ text: String?) -> String? {
+        guard let text = classifyHead(text) else { return nil }
+        var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        trimmed = trimmed.replacingOccurrences(of: "\u{200B}", with: "")
+        trimmed = trimmed.replacingOccurrences(of: "\u{FEFF}", with: "")
+        trimmed = trimmed.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count >= 2 {
+            let first = trimmed.first
+            let last = trimmed.last
+            if (first == "<" && last == ">") || (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+                trimmed = String(trimmed.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private static func isColorText(_ text: String?) -> Bool {
