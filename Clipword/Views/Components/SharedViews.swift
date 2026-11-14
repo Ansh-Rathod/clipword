@@ -5,9 +5,10 @@ import SwiftUI
 // MARK: - Arrow focus (web-style tabbing via arrows)
 
 enum ArrowFocusExitDirection {
-    /// Esc (or ← at page left edge) → sidebar; falls back to the sidebar toggle when hidden.
+    /// Leave content toward the left column: the sidebar when it's open,
+    /// otherwise the sidebar-toggle button in the chrome bar.
     case previous, next
-    /// ↑ from content top-left → sidebar toggle
+    /// ↑ from content top-left, or ← from the left edge when the sidebar is hidden.
     case chromeLeading
     /// ↑ from content top (other columns) → close
     case chromeTrailing
@@ -74,7 +75,8 @@ extension EnvironmentValues {
         set { self[ContentShouldTakeFocusKey.self] = newValue }
     }
 
-    /// True when the sidebar is visible (← from page edge may focus it).
+    /// True when the sidebar is visible. ← from a page's left edge then focuses
+    /// the sidebar; when false, the same key focuses the sidebar toggle instead.
     var sidebarOpenForFocus: Bool {
         get { self[SidebarOpenForFocusKey.self] }
         set { self[SidebarOpenForFocusKey.self] = newValue }
@@ -132,8 +134,8 @@ final class MenuAnchorBox {
     weak var view: NSView?
 }
 
-/// Accent fill on the selected row while the list has keyboard focus; a quieter
-/// fill when the row is selected but the list is not the active control.
+/// Sidebar-style selection pill. Fill only — no stroke, no focus ring.
+/// Horizontal inset matches Finder/Mail; the list's own row insets stay intact.
 struct KeyboardListRowChrome: View {
     let isSelected: Bool
     let isActive: Bool
@@ -141,7 +143,7 @@ struct KeyboardListRowChrome: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 6, style: .continuous)
             .fill(fillColor)
-            .padding(.vertical, 1)
+            .padding(.horizontal, 8)
     }
 
     private var fillColor: Color {
@@ -229,6 +231,65 @@ private struct PersistentMenuAnchorProbe: NSViewRepresentable {
     }
 }
 
+/// Invisible first-responder stand-in so a List can be the logical keyboard
+/// target without AppKit's table view intercepting arrows and Delete.
+private struct KeyboardFocusSink: View {
+    var body: some View {
+        Color.clear
+            .frame(width: 1, height: 1)
+            .contentShape(Rectangle())
+            .focusable()
+            .focusEffectDisabled()
+            .accessibilityHidden(true)
+            .allowsHitTesting(false)
+    }
+}
+
+/// Stops the AppKit table behind a SwiftUI `List` from becoming first responder
+/// on click, which would swallow arrow keys and Delete.
+private struct RefuseListFirstResponder: NSViewRepresentable {
+    func makeNSView(context: Context) -> RefuseListFirstResponderView {
+        RefuseListFirstResponderView()
+    }
+
+    func updateNSView(_ nsView: RefuseListFirstResponderView, context: Context) {
+        nsView.disableTableFirstResponder()
+    }
+}
+
+private final class RefuseListFirstResponderView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        disableTableFirstResponder()
+    }
+
+    override func layout() {
+        super.layout()
+        disableTableFirstResponder()
+    }
+
+    func disableTableFirstResponder() {
+        var node: NSView? = self
+        while let view = node {
+            if let table = Self.firstTable(in: view) {
+                table.refusesFirstResponder = true
+                table.selectionHighlightStyle = .none
+                table.focusRingType = .none
+                return
+            }
+            node = view.superview
+        }
+    }
+
+    private static func firstTable(in view: NSView) -> NSTableView? {
+        if let table = view as? NSTableView { return table }
+        for subview in view.subviews {
+            if let table = firstTable(in: subview) { return table }
+        }
+        return nil
+    }
+}
+
 extension View {
     func arrowFocus<F: Hashable>(_ focus: FocusState<F?>.Binding, equals value: F) -> some View {
         self
@@ -237,12 +298,18 @@ extension View {
             .modifier(ArrowFocusRingModifier())
     }
 
-    /// Keyboard focus on a List without a ring around the whole list — row selection is the indicator.
+    /// Marks a List as the logical keyboard target without making the List
+    /// itself first responder. Focusing the `List` hands keys to AppKit's
+    /// table view, which swallows arrows (fighting SwiftUI navigation) and
+    /// Delete (with no native selection to remove).
     func arrowListFocus<F: Hashable>(_ focus: FocusState<F?>.Binding, equals value: F) -> some View {
         self
-            .focusable()
-            .focused(focus, equals: value)
             .focusEffectDisabled()
+            .background(RefuseListFirstResponder().frame(width: 0, height: 0))
+            .overlay(alignment: .topLeading) {
+                KeyboardFocusSink()
+                    .focused(focus, equals: value)
+            }
     }
 
     /// Highlight ring without focusing an editable TextField (Return enters edit).
@@ -263,7 +330,9 @@ extension View {
         let active = selected && listActive
         return self
             .keyboardMenuAnchor(active)
+            .focusEffectDisabled()
             .listRowBackground(KeyboardListRowChrome(isSelected: selected, isActive: active))
+            .listRowSeparator(.hidden)
     }
 
     /// Keeps the row identified by `target` visible whenever it changes.
@@ -291,6 +360,24 @@ extension View {
 
     func pointingHandCursor() -> some View {
         modifier(PointingHandOnHover())
+    }
+
+    /// Delete / ⌘Delete while `enabled` (typically: the list is the active stop
+    /// and a text field is not editing). Disabled so the key reaches text fields.
+    func keyboardDeleteFallback(enabled: Bool, action: @escaping () -> Void) -> some View {
+        background {
+            Group {
+                Button(action: action) { EmptyView() }
+                    .keyboardShortcut(.delete)
+                Button(action: action) { EmptyView() }
+                    .keyboardShortcut(.delete, modifiers: .command)
+            }
+            .disabled(!enabled)
+            .opacity(0)
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
     }
 }
 
@@ -322,6 +409,28 @@ enum SpatialFocusResult<F: Hashable> {
 
 enum SpatialDirection {
     case up, down, left, right
+}
+
+/// ← from a page's left edge: sidebar when it's showing, otherwise the toggle.
+func arrowExitForLeadingEdge(sidebarOpen: Bool) -> ArrowFocusExitDirection {
+    sidebarOpen ? .previous : .chromeLeading
+}
+
+/// Maps a spatial-grid miss at the top or left edge onto chrome / sidebar.
+func applyArrowEdgeExit(
+    direction: SpatialDirection,
+    currentIsLeading: Bool,
+    sidebarOpen: Bool,
+    exit: ((ArrowFocusExitDirection) -> Void)?
+) {
+    switch direction {
+    case .up:
+        exit?(currentIsLeading ? .chromeLeading : .chromeTrailing)
+    case .left:
+        exit?(arrowExitForLeadingEdge(sidebarOpen: sidebarOpen))
+    default:
+        break
+    }
 }
 
 /// Grid rows: left/right within a row; up/down to adjacent row (same column index when possible).
@@ -490,18 +599,35 @@ enum KeyboardContextMenu {
         edit: @escaping () -> Void,
         toggleBookmark: @escaping () -> Void,
         bookmarkTitle: String,
+        folders: [(id: UUID, name: String)],
+        currentFolderID: UUID?,
+        addToFolder: @escaping (UUID) -> Void,
+        addToNewFolder: @escaping () -> Void,
         togglePin: @escaping () -> Void,
         pinTitle: String,
         delete: @escaping () -> Void,
         relativeTo view: NSView? = nil
     ) {
-        pop(buildMenu { add, separator in
+        pop(buildMenu { add, separator, submenu in
             add("Copy", "c", .command, copy)
             add("Paste", "\r", [], paste)
             add("Add to Paste Stack", "v", [.command, .shift], addToStack)
             separator()
             add("Edit…", "e", .command, edit)
             add(bookmarkTitle, "b", .option, toggleBookmark)
+            submenu("Add to Folder") { addItem, sep in
+                appendFolderItems(
+                    add: addItem,
+                    separator: sep,
+                    folders: folders,
+                    currentFolderID: currentFolderID,
+                    includeUnfiled: false,
+                    select: { id in
+                        if let id { addToFolder(id) }
+                    },
+                    newFolder: addToNewFolder
+                )
+            }
             add(pinTitle, "p", .option, togglePin)
             separator()
             add("Delete", "\u{08}", .command, delete)
@@ -512,16 +638,73 @@ enum KeyboardContextMenu {
         copy: @escaping () -> Void,
         paste: @escaping () -> Void,
         edit: @escaping () -> Void,
+        folders: [(id: UUID, name: String)],
+        currentFolderID: UUID?,
+        moveToFolder: @escaping (UUID?) -> Void,
+        moveToNewFolder: @escaping () -> Void,
         remove: @escaping () -> Void,
         relativeTo view: NSView? = nil
     ) {
-        pop(buildMenu { add, separator in
+        pop(buildMenu { add, separator, submenu in
             add("Copy", "c", .command, copy)
             add("Paste", "\r", [], paste)
             separator()
             add("Edit…", "e", .command, edit)
+            submenu("Move to Folder") { addItem, sep in
+                appendFolderItems(
+                    add: addItem,
+                    separator: sep,
+                    folders: folders,
+                    currentFolderID: currentFolderID,
+                    includeUnfiled: true,
+                    select: moveToFolder,
+                    newFolder: moveToNewFolder
+                )
+            }
             add("Remove Bookmark", "\u{08}", .command, remove)
         }, relativeTo: view)
+    }
+
+    static func popFolderMenu(
+        folders: [(id: UUID, name: String)],
+        currentFolderID: UUID?,
+        includeUnfiled: Bool,
+        select: @escaping (UUID?) -> Void,
+        newFolder: @escaping () -> Void,
+        relativeTo view: NSView? = nil
+    ) {
+        pop(buildMenu { add, separator, _ in
+            appendFolderItems(
+                add: add,
+                separator: separator,
+                folders: folders,
+                currentFolderID: currentFolderID,
+                includeUnfiled: includeUnfiled,
+                select: select,
+                newFolder: newFolder
+            )
+        }, relativeTo: view)
+    }
+
+    private static func appendFolderItems(
+        add: (String, String, NSEvent.ModifierFlags, @escaping () -> Void) -> Void,
+        separator: () -> Void,
+        folders: [(id: UUID, name: String)],
+        currentFolderID: UUID?,
+        includeUnfiled: Bool,
+        select: @escaping (UUID?) -> Void,
+        newFolder: @escaping () -> Void
+    ) {
+        if includeUnfiled {
+            add(currentFolderID == nil ? "✓ Unfiled" : "Unfiled", "", [], { select(nil) })
+            if !folders.isEmpty { separator() }
+        }
+        for folder in folders {
+            let title = folder.id == currentFolderID ? "✓ \(folder.name)" : folder.name
+            add(title, "", [], { select(folder.id) })
+        }
+        if includeUnfiled || !folders.isEmpty { separator() }
+        add("New Folder…", "", [], newFolder)
     }
 
     static func popCategoryFilter(
@@ -529,7 +712,7 @@ enum KeyboardContextMenu {
         select: @escaping (ClipboardCategory?) -> Void,
         relativeTo view: NSView? = nil
     ) {
-        pop(buildMenu { add, separator in
+        pop(buildMenu { add, separator, _ in
             add(current == nil ? "✓ All Types" : "All Types", "", [], { select(nil) })
             separator()
             for category in ClipboardCategory.allCases {
@@ -545,7 +728,7 @@ enum KeyboardContextMenu {
         select: @escaping (String?) -> Void,
         relativeTo view: NSView? = nil
     ) {
-        pop(buildMenu { add, separator in
+        pop(buildMenu { add, separator, _ in
             add(current == nil ? "✓ All Apps" : "All Apps", "", [], { select(nil) })
             if !apps.isEmpty {
                 separator()
@@ -566,7 +749,7 @@ enum KeyboardContextMenu {
         relativeTo view: NSView? = nil,
         select: @escaping (T) -> Void
     ) {
-        pop(buildMenu { add, _ in
+        pop(buildMenu { add, _, _ in
             for choice in choices {
                 let label = title(choice)
                 add(current == choice ? "✓ \(label)" : label, "", [], { select(choice) })
@@ -577,7 +760,11 @@ enum KeyboardContextMenu {
     private static func buildMenu(
         _ build: (
             _ add: (String, String, NSEvent.ModifierFlags, @escaping () -> Void) -> Void,
-            _ separator: () -> Void
+            _ separator: () -> Void,
+            _ submenu: (String, (
+                _ add: (String, String, NSEvent.ModifierFlags, @escaping () -> Void) -> Void,
+                _ separator: () -> Void
+            ) -> Void) -> Void
         ) -> Void
     ) -> NSMenu {
         let actions = MenuActions()
@@ -586,17 +773,45 @@ enum KeyboardContextMenu {
         menu.autoenablesItems = false
         var tag = 1
 
-        func add(_ title: String, _ key: String, _ mask: NSEvent.ModifierFlags, _ handler: @escaping () -> Void) {
+        func addItem(
+            to target: NSMenu,
+            _ title: String,
+            _ key: String,
+            _ mask: NSEvent.ModifierFlags,
+            _ handler: @escaping () -> Void
+        ) {
             let item = NSMenuItem(title: title, action: #selector(MenuActions.invoke(_:)), keyEquivalent: key)
             item.target = actions
             item.keyEquivalentModifierMask = mask
             item.tag = tag
             actions.handlers[tag] = handler
             tag += 1
+            target.addItem(item)
+        }
+
+        func add(_ title: String, _ key: String, _ mask: NSEvent.ModifierFlags, _ handler: @escaping () -> Void) {
+            addItem(to: menu, title, key, mask, handler)
+        }
+
+        func submenu(
+            _ title: String,
+            _ nest: (
+                _ add: (String, String, NSEvent.ModifierFlags, @escaping () -> Void) -> Void,
+                _ separator: () -> Void
+            ) -> Void
+        ) {
+            let child = NSMenu()
+            child.autoenablesItems = false
+            nest(
+                { title, key, mask, handler in addItem(to: child, title, key, mask, handler) },
+                { child.addItem(.separator()) }
+            )
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.submenu = child
             menu.addItem(item)
         }
 
-        build(add, { menu.addItem(.separator()) })
+        build(add, { menu.addItem(.separator()) }, submenu)
         return menu
     }
 
@@ -645,6 +860,80 @@ enum KeyboardContextMenu {
                 in: nil
             )
         }
+    }
+}
+
+struct BookmarkFolderPickerButtons: View {
+    let folders: [BookmarkFolder]
+    var currentFolderID: UUID?
+    var allowUnfiled: Bool = false
+    let onPick: (BookmarkFolder?) -> Void
+    let onNew: () -> Void
+
+    var body: some View {
+        if allowUnfiled {
+            Button {
+                onPick(nil)
+            } label: {
+                folderLabel("Unfiled", selected: currentFolderID == nil)
+            }
+            if !folders.isEmpty { Divider() }
+        }
+        ForEach(folders) { folder in
+            Button {
+                onPick(folder)
+            } label: {
+                folderLabel(folder.name, selected: folder.id == currentFolderID)
+            }
+        }
+        if allowUnfiled || !folders.isEmpty { Divider() }
+        Button("New Folder…", action: onNew)
+    }
+
+    @ViewBuilder
+    private func folderLabel(_ name: String, selected: Bool) -> some View {
+        if selected {
+            Text("✓ \(name)")
+        } else {
+            Text(name)
+        }
+    }
+}
+
+struct FolderNameAlertModifier: ViewModifier {
+    @Binding var isPresented: Bool
+    var title: String
+    @Binding var name: String
+    var confirmTitle: String = "Create"
+    var onConfirm: () -> Void
+
+    func body(content: Content) -> some View {
+        content.alert(title, isPresented: $isPresented) {
+            TextField("Folder name", text: $name)
+            Button(confirmTitle, action: onConfirm)
+                .keyboardShortcut(.defaultAction)
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+}
+
+extension View {
+    func folderNameAlert(
+        isPresented: Binding<Bool>,
+        title: String,
+        name: Binding<String>,
+        confirmTitle: String = "Create",
+        onConfirm: @escaping () -> Void
+    ) -> some View {
+        modifier(
+            FolderNameAlertModifier(
+                isPresented: isPresented,
+                title: title,
+                name: name,
+                confirmTitle: confirmTitle,
+                onConfirm: onConfirm
+            )
+        )
     }
 }
 
@@ -871,6 +1160,162 @@ struct AppIconView: View {
         } else {
             Image(systemName: "app")
                 .frame(width: size, height: size)
+        }
+    }
+}
+
+// MARK: - Detail action buttons & toasts
+
+struct ScaleOnPressButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.88 : 1)
+            .animation(.spring(response: 0.18, dampingFraction: 0.55), value: configuration.isPressed)
+    }
+}
+
+struct DetailIconButton<Value: Hashable>: View {
+    let systemName: String
+    let help: String
+    var tint: Color? = nil
+    var isActive: Bool = false
+    var flashSuccess: Bool = false
+    var focus: FocusState<Value?>.Binding
+    var focusValue: Value
+    let action: () -> Void
+
+    @State private var hovering = false
+    @State private var showTip = false
+    @State private var hoverTask: Task<Void, Never>?
+
+    private var iconName: String {
+        flashSuccess ? "checkmark" : systemName
+    }
+
+    private var iconTint: Color {
+        if flashSuccess { return .green }
+        if let tint { return tint }
+        return Color.primary.opacity(0.85)
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: iconName)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(iconTint)
+                .contentTransition(.symbolEffect(.replace))
+                .symbolEffect(.bounce, value: isActive)
+                .frame(width: 28, height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isActive || flashSuccess ? iconTint.opacity(0.18) : Color.primary.opacity(0.07))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(isActive || flashSuccess ? iconTint.opacity(0.4) : Color.primary.opacity(0.08))
+                )
+                .scaleEffect(hovering ? 1.08 : 1)
+                .animation(.spring(response: 0.28, dampingFraction: 0.62), value: hovering)
+                .animation(.spring(response: 0.3, dampingFraction: 0.68), value: isActive)
+                .animation(.spring(response: 0.28, dampingFraction: 0.55), value: flashSuccess)
+        }
+        .buttonStyle(ScaleOnPressButtonStyle())
+        .pointingHandCursor()
+        .accessibilityLabel(help)
+        .arrowFocus(focus, equals: focusValue)
+        .onHover(perform: handleHover)
+        .overlay(alignment: .top) {
+            if showTip {
+                tooltip
+                    .fixedSize()
+                    .offset(y: -34)
+                    .transition(.opacity.combined(with: .scale(scale: 0.94, anchor: .bottom)))
+                    .allowsHitTesting(false)
+            }
+        }
+        .zIndex(showTip ? 20 : 0)
+        .onDisappear {
+            hoverTask?.cancel()
+        }
+    }
+
+    private var tooltip: some View {
+        Text(help)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(.ultraThickMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08))
+            )
+            .shadow(color: .black.opacity(0.22), radius: 8, y: 2)
+    }
+
+    private func handleHover(_ on: Bool) {
+        hovering = on
+        hoverTask?.cancel()
+        if on {
+            hoverTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(280))
+                guard !Task.isCancelled, hovering else { return }
+                withAnimation(.easeOut(duration: 0.12)) { showTip = true }
+            }
+        } else {
+            withAnimation(.easeOut(duration: 0.08)) { showTip = false }
+        }
+    }
+}
+
+struct ActionFeedbackToast: View {
+    let kind: HistoryActionKind
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: kind.systemImage)
+                .foregroundStyle(kind.tint)
+                .symbolEffect(.bounce, value: kind)
+            Text(kind.title)
+                .font(.callout.weight(.semibold))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.ultraThickMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08)))
+        .shadow(color: .black.opacity(0.2), radius: 10, y: 3)
+    }
+}
+
+extension HistoryActionKind {
+    var title: String {
+        switch self {
+        case .copied: "Copied to clipboard"
+        case .pasted: "Pasted"
+        case .bookmarked: "Bookmarked"
+        case .unbookmarked: "Bookmark removed"
+        case .pinned: "Pinned to top"
+        case .unpinned: "Unpinned"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .copied, .pasted: "checkmark.circle.fill"
+        case .bookmarked: "bookmark.fill"
+        case .unbookmarked: "bookmark"
+        case .pinned: "pin.fill"
+        case .unpinned: "pin"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .copied, .pasted: .green
+        case .bookmarked: .accentColor
+        case .unbookmarked: .secondary
+        case .pinned: .orange
+        case .unpinned: .secondary
         }
     }
 }

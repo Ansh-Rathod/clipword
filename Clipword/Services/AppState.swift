@@ -205,6 +205,9 @@ final class AppState {
     }
 
     private func registerPasteStackMonitor() {
+        // A global keyDown monitor asks TCC for Device Access. Installing it
+        // on every launch re-prompts even when the permission is already on.
+        guard PasteService.isAccessibilityTrusted else { return }
         pasteStackMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard event.modifierFlags.contains(.command),
                   event.charactersIgnoringModifiers?.lowercased() == "v",

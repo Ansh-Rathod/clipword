@@ -3,7 +3,14 @@ import Defaults
 import SwiftUI
 
 enum BookmarkFocus: Hashable {
-    case typeFilter, appFilter, search, list, edit, remove
+    case typeFilter, appFilter, search, newFolder, list, edit, remove, moveFolder
+}
+
+private struct BookmarkListSection: Identifiable {
+    let id: String
+    let title: String
+    let folder: BookmarkFolder?
+    let items: [BookmarkItem]
 }
 
 struct BookmarksView: View {
@@ -25,6 +32,11 @@ struct BookmarksView: View {
     @State private var editingItem: BookmarkItem?
     @State private var forceSearch = false
     @State private var listScrollTarget: UUID?
+    @State private var isNamingFolder = false
+    @State private var folderNameDraft = ""
+    @State private var renameTarget: BookmarkFolder?
+    @State private var assignBookmarkItem: BookmarkItem?
+    @State private var collapsedFolderIDs: Set<UUID> = []
     @FocusState private var focus: BookmarkFocus?
     @FocusState private var searchFieldActive: Bool
 
@@ -40,10 +52,11 @@ struct BookmarksView: View {
     private var focusRows: [[BookmarkFocus]] {
         var toolbar: [BookmarkFocus] = [.typeFilter, .appFilter]
         if showSearch { toolbar.append(.search) }
-        if filteredBookmarks.isEmpty {
+        toolbar.append(.newFolder)
+        if navigableBookmarks.isEmpty {
             return [toolbar]
         }
-        return [toolbar, [.list, .edit, .remove]]
+        return [toolbar, [.list, .edit, .remove, .moveFolder]]
     }
 
     private var availableApps: [AppFilterOption] {
@@ -80,6 +93,10 @@ struct BookmarksView: View {
         return result
     }
 
+    private var isFiltering: Bool {
+        activeCategory != nil || activeAppBundleId != nil || !searchQuery.isEmpty
+    }
+
     private var groupedItems: [(String, [BookmarkItem])] {
         let items = filteredBookmarks
         let calendar = Calendar.current
@@ -93,17 +110,58 @@ struct BookmarksView: View {
         }
     }
 
+    private var listSections: [BookmarkListSection] {
+        if historyStore.folders.isEmpty {
+            return groupedItems.map {
+                BookmarkListSection(id: $0.0, title: $0.0, folder: nil, items: $0.1)
+            }
+        }
+
+        let items = filteredBookmarks
+        var sections: [BookmarkListSection] = []
+        for folder in historyStore.folders {
+            let folderItems = items.filter { $0.folder?.id == folder.id }
+            if folderItems.isEmpty && isFiltering { continue }
+            sections.append(
+                BookmarkListSection(
+                    id: folder.id.uuidString,
+                    title: folder.name,
+                    folder: folder,
+                    items: folderItems
+                )
+            )
+        }
+        let unfiled = items.filter { $0.folder == nil }
+        if !unfiled.isEmpty {
+            sections.append(
+                BookmarkListSection(id: "unfiled", title: "Unfiled", folder: nil, items: unfiled)
+            )
+        }
+        return sections
+    }
+
+    private var navigableBookmarks: [BookmarkItem] {
+        listSections.flatMap { section in
+            if let folder = section.folder, collapsedFolderIDs.contains(folder.id) {
+                return [BookmarkItem]()
+            }
+            return section.items
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             toolbar
             Divider()
 
-            if filteredBookmarks.isEmpty {
+            if listSections.isEmpty {
                 ContentUnavailableView(
-                    historyStore.bookmarks.isEmpty ? "No bookmarks" : "No bookmarks match this filter",
+                    historyStore.bookmarks.isEmpty && historyStore.folders.isEmpty
+                        ? "No bookmarks"
+                        : "No bookmarks match this filter",
                     systemImage: "bookmark",
-                    description: Text(historyStore.bookmarks.isEmpty
-                        ? "Bookmark clipboard entries to keep them here"
+                    description: Text(historyStore.bookmarks.isEmpty && historyStore.folders.isEmpty
+                        ? "Bookmark clipboard entries, or create a folder to organize them"
                         : "Try a different filter or search term")
                 )
                 .frame(maxHeight: .infinity)
@@ -121,11 +179,20 @@ struct BookmarksView: View {
         .sheet(item: $editingItem) { item in
             EditBookmarkSheet(item: item)
         }
+        .folderNameAlert(
+            isPresented: $isNamingFolder,
+            title: renameTarget == nil ? "New Folder" : "Rename Folder",
+            name: $folderNameDraft,
+            confirmTitle: renameTarget == nil ? "Create" : "Rename",
+            onConfirm: confirmFolderName
+        )
         .onKeyPress(.rightArrow) { handleArrow(.right) }
         .onKeyPress(.leftArrow) { handleArrow(.left) }
         .onKeyPress(keys: [.upArrow, .downArrow]) { press in
             handleArrow(press.key == .upArrow ? .up : .down, modifiers: press.modifiers)
         }
+        .onKeyPress(keys: [.delete, .deleteForward]) { _ in handleDelete() }
+        .keyboardDeleteFallback(enabled: focus == .list && !searchFieldActive, action: deleteSelectedItem)
         .onKeyPress(.return) { activateFocused() }
         .onKeyPress(.space) { activateFocused(allowListPaste: false) }
         .onKeyPress(.escape) {
@@ -223,6 +290,16 @@ struct BookmarksView: View {
             }
 
             Spacer()
+
+            Button {
+                beginNewFolder()
+            } label: {
+                Label("New Folder", systemImage: "folder.badge.plus")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .help("New Folder")
+            .arrowFocus($focus, equals: .newFolder)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -230,47 +307,42 @@ struct BookmarksView: View {
 
     private var bookmarksList: some View {
         List {
-            ForEach(groupedItems, id: \.0) { section, items in
+            ForEach(listSections) { section in
                 Section {
-                    ForEach(items) { item in
-                        BookmarkRowView(
-                            item: item,
-                            emphasized: historyStore.selectedBookmarkID == item.id && focus == .list
-                        )
-                        .tag(item.id)
-                        .keyboardListRow(
-                            selected: historyStore.selectedBookmarkID == item.id,
-                            listActive: focus == .list
-                        )
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            historyStore.selectedBookmarkID = item.id
-                            if NSApp.currentEvent?.clickCount == 2 {
-                                historyStore.selectBookmark(item, paste: NSEvent.modifierFlags.contains(.option))
-                                appState.hideWindow()
-                            }
-                        }
-                        .contextMenu {
-                                Button("Copy") { historyStore.selectBookmark(item, paste: false) }
-                                    .keyboardShortcut("c")
-                                Button("Paste") {
-                                    historyStore.selectBookmark(item, paste: true)
+                    let collapsed = section.folder.map { collapsedFolderIDs.contains($0.id) } ?? false
+                    if !collapsed {
+                        if section.items.isEmpty {
+                            Text("Empty folder")
+                                .foregroundStyle(.tertiary)
+                                .font(.callout)
+                        } else {
+                            ForEach(section.items) { item in
+                                BookmarkRowView(
+                                    item: item,
+                                    emphasized: historyStore.selectedBookmarkID == item.id && focus == .list,
+                                    folderName: isFiltering ? item.folder?.name : nil
+                                )
+                                .id(item.id)
+                                .keyboardListRow(
+                                    selected: historyStore.selectedBookmarkID == item.id,
+                                    listActive: focus == .list
+                                )
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    historyStore.selectedBookmarkID = item.id
+                                    focus = .list
+                                    searchFieldActive = false
+                                }
+                                .onTapGesture(count: 2) {
+                                    historyStore.selectBookmark(item, paste: NSEvent.modifierFlags.contains(.option))
                                     appState.hideWindow()
                                 }
-                                Divider()
-                                Button("Edit…") { editingItem = item }
-                                    .keyboardShortcut("e")
-                                Button("Remove Bookmark", role: .destructive) {
-                                    historyStore.deleteBookmark(item)
-                                }
-                                .keyboardShortcut(.delete, modifiers: .command)
+                                .contextMenu { bookmarkContextMenu(for: item) }
                             }
+                        }
                     }
                 } header: {
-                    Text(section)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .textCase(nil)
+                    bookmarkSectionHeader(section)
                 }
             }
         }
@@ -278,10 +350,7 @@ struct BookmarksView: View {
         .scrollContentBackground(.hidden)
         .arrowListFocus($focus, equals: .list)
         .scrollToVisible(target: listScrollTarget)
-        .onDeleteCommand {
-            guard let item = selectedItem else { return }
-            historyStore.deleteBookmark(item)
-        }
+        .onDeleteCommand { deleteSelectedItem() }
     }
 
     @ViewBuilder
@@ -290,7 +359,8 @@ struct BookmarksView: View {
             BookmarkDetailPane(
                 item: item,
                 focus: $focus,
-                onEdit: { editingItem = item }
+                onEdit: { editingItem = item },
+                onMoveFolder: { showFolderMenu(for: item) }
             )
         } else {
             ContentUnavailableView("Select a bookmark", systemImage: "bookmark")
@@ -299,8 +369,9 @@ struct BookmarksView: View {
 
     private func prepareContent(takeFocus: Bool) {
         historyStore.reloadBookmarks()
+        historyStore.reloadFolders()
         if takeFocus {
-            historyStore.selectedBookmarkID = filteredBookmarks.first?.id
+            historyStore.selectedBookmarkID = navigableBookmarks.first?.id
             takeKeyboardFocus(target: .listPreferred)
         } else {
             focus = nil
@@ -312,8 +383,8 @@ struct BookmarksView: View {
         let toolbar = focusRows.first ?? [.typeFilter]
         switch target {
         case .listPreferred:
-            if !filteredBookmarks.isEmpty {
-                historyStore.selectedBookmarkID = filteredBookmarks.first?.id
+            if !navigableBookmarks.isEmpty {
+                historyStore.selectedBookmarkID = navigableBookmarks.first?.id
                 focus = .list
                 listScrollTarget = historyStore.selectedBookmarkID
             } else {
@@ -367,21 +438,42 @@ struct BookmarksView: View {
         case .listMove:
             return .handled
         case .exitPrevious:
-            if direction == .up {
-                searchFieldActive = false
-                arrowFocusExit?(current == .typeFilter ? .chromeLeading : .chromeTrailing)
-            } else if direction == .left, sidebarOpenForFocus {
-                searchFieldActive = false
-                arrowFocusExit?(.previous)
-            }
+            searchFieldActive = false
+            applyArrowEdgeExit(
+                direction: direction,
+                currentIsLeading: current == .typeFilter || current == .list,
+                sidebarOpen: sidebarOpenForFocus,
+                exit: arrowFocusExit
+            )
             return .handled
         case .exitNext:
             return .handled
         }
     }
 
+    private func handleDelete() -> KeyPress.Result {
+        guard focus == .list, !searchFieldActive else { return .ignored }
+        deleteSelectedItem()
+        return .handled
+    }
+
+    private func deleteSelectedItem() {
+        guard let item = selectedItem else { return }
+        let items = navigableBookmarks
+        let index = items.firstIndex(where: { $0.id == item.id })
+        historyStore.deleteBookmark(item)
+        let remaining = navigableBookmarks
+        if remaining.isEmpty {
+            historyStore.selectedBookmarkID = nil
+            focus = focusRows.first?.first ?? .typeFilter
+        } else if let index {
+            historyStore.selectedBookmarkID = remaining[min(index, remaining.count - 1)].id
+        }
+        listScrollTarget = historyStore.selectedBookmarkID
+    }
+
     private func handleListJump(_ direction: SpatialDirection) -> KeyPress.Result {
-        let items = filteredBookmarks
+        let items = navigableBookmarks
         guard let target = direction == .up ? items.first : items.last else { return .handled }
         historyStore.selectedBookmarkID = target.id
         focus = .list
@@ -390,7 +482,7 @@ struct BookmarksView: View {
     }
 
     private func handleListVertical(_ direction: SpatialDirection) -> KeyPress.Result {
-        let items = filteredBookmarks
+        let items = navigableBookmarks
         guard !items.isEmpty else { return .handled }
         let index = historyStore.selectedBookmarkID.flatMap { id in items.firstIndex(where: { $0.id == id }) } ?? 0
         if direction == .up {
@@ -425,6 +517,10 @@ struct BookmarksView: View {
             editingItem = selectedItem
         case .remove:
             if let item = selectedItem { historyStore.deleteBookmark(item) }
+        case .newFolder:
+            beginNewFolder()
+        case .moveFolder:
+            if let item = selectedItem { showFolderMenu(for: item) }
         case .typeFilter:
             KeyboardContextMenu.popCategoryFilter(current: activeCategory) { category in
                 activeCategory = category
@@ -448,8 +544,117 @@ struct BookmarksView: View {
                 appState.hideWindow()
             },
             edit: { editingItem = item },
+            folders: historyStore.folders.map { ($0.id, $0.name) },
+            currentFolderID: item.folder?.id,
+            moveToFolder: { id in
+                historyStore.moveBookmark(item, to: id.flatMap { historyStore.folder(id: $0) })
+            },
+            moveToNewFolder: { beginNewFolder(assigning: item) },
             remove: { historyStore.deleteBookmark(item) }
         )
+    }
+
+    @ViewBuilder
+    private func bookmarkSectionHeader(_ section: BookmarkListSection) -> some View {
+        if let folder = section.folder {
+            Button {
+                collapsedFolderIDs.formSymmetricDifference([folder.id])
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: collapsedFolderIDs.contains(folder.id) ? "chevron.right" : "chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .frame(width: 10)
+                    Image(systemName: "folder.fill")
+                    Text(section.title)
+                    Spacer(minLength: 0)
+                    Text("\(section.items.count)")
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .buttonStyle(.plain)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .textCase(nil)
+            .contextMenu {
+                Button("Rename…") { beginRename(folder) }
+                Button("Delete Folder", role: .destructive) {
+                    historyStore.deleteFolder(folder)
+                    collapsedFolderIDs.remove(folder.id)
+                }
+            }
+        } else {
+            Text(section.title)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .textCase(nil)
+        }
+    }
+
+    @ViewBuilder
+    private func bookmarkContextMenu(for item: BookmarkItem) -> some View {
+        Button("Copy") { historyStore.selectBookmark(item, paste: false) }
+            .keyboardShortcut("c")
+        Button("Paste") {
+            historyStore.selectBookmark(item, paste: true)
+            appState.hideWindow()
+        }
+        Divider()
+        Button("Edit…") { editingItem = item }
+            .keyboardShortcut("e")
+        Menu("Move to Folder") {
+            BookmarkFolderPickerButtons(
+                folders: historyStore.folders,
+                currentFolderID: item.folder?.id,
+                allowUnfiled: true,
+                onPick: { historyStore.moveBookmark(item, to: $0) },
+                onNew: { beginNewFolder(assigning: item) }
+            )
+        }
+        Divider()
+        Button("Remove Bookmark", role: .destructive) {
+            historyStore.deleteBookmark(item)
+        }
+        .keyboardShortcut(.delete, modifiers: .command)
+    }
+
+    private func showFolderMenu(for item: BookmarkItem) {
+        KeyboardContextMenu.popFolderMenu(
+            folders: historyStore.folders.map { ($0.id, $0.name) },
+            currentFolderID: item.folder?.id,
+            includeUnfiled: true,
+            select: { id in
+                historyStore.moveBookmark(item, to: id.flatMap { historyStore.folder(id: $0) })
+            },
+            newFolder: { beginNewFolder(assigning: item) }
+        )
+    }
+
+    private func beginNewFolder(assigning item: BookmarkItem? = nil) {
+        renameTarget = nil
+        assignBookmarkItem = item
+        folderNameDraft = ""
+        isNamingFolder = true
+    }
+
+    private func beginRename(_ folder: BookmarkFolder) {
+        renameTarget = folder
+        assignBookmarkItem = nil
+        folderNameDraft = folder.name
+        isNamingFolder = true
+    }
+
+    private func confirmFolderName() {
+        if let renameTarget {
+            historyStore.renameFolder(renameTarget, to: folderNameDraft)
+            self.renameTarget = nil
+        } else {
+            let folder = historyStore.createFolder(named: folderNameDraft)
+            if let item = assignBookmarkItem {
+                historyStore.moveBookmark(item, to: folder)
+                assignBookmarkItem = nil
+            }
+        }
+        folderNameDraft = ""
     }
 
     private func timelineSection(for date: Date, calendar: Calendar) -> String {
@@ -466,6 +671,7 @@ struct BookmarksView: View {
 struct BookmarkRowView: View {
     let item: BookmarkItem
     var emphasized: Bool = false
+    var folderName: String? = nil
 
     var body: some View {
         HStack(spacing: 10) {
@@ -478,6 +684,13 @@ struct BookmarkRowView: View {
                 .truncationMode(.tail)
 
             Spacer(minLength: 0)
+
+            if let folderName, !folderName.isEmpty {
+                Text(folderName)
+                    .font(.caption2)
+                    .foregroundStyle(emphasized ? Color.white.opacity(0.75) : Color.secondary)
+                    .lineLimit(1)
+            }
 
             Image(systemName: "bookmark.fill")
                 .font(.caption2)
@@ -499,6 +712,7 @@ struct BookmarkDetailPane: View {
     let item: BookmarkItem
     var focus: FocusState<BookmarkFocus?>.Binding
     var onEdit: () -> Void = {}
+    var onMoveFolder: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 0) {
@@ -552,6 +766,9 @@ struct BookmarkDetailPane: View {
             infoRow("Words") {
                 Text("\(item.wordCount)")
             }
+            infoRow("Folder") {
+                Text(item.folder?.name ?? "Unfiled")
+            }
             infoRow("Bookmarked") {
                 Text(dateLabel(for: item.bookmarkedAt))
             }
@@ -563,6 +780,9 @@ struct BookmarkDetailPane: View {
                 Button("Edit…", action: onEdit)
                     .buttonStyle(.borderless)
                     .arrowFocus(focus, equals: .edit)
+                Button("Move to Folder…", action: onMoveFolder)
+                    .buttonStyle(.borderless)
+                    .arrowFocus(focus, equals: .moveFolder)
                 Button("Remove Bookmark", role: .destructive) {
                     historyStore.deleteBookmark(item)
                 }

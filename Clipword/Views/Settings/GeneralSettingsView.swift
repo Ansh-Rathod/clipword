@@ -104,8 +104,8 @@ struct GeneralSettingsView: View {
             Section("Keyboard") {
                 shortcutRow("← →", "Move within a row")
                 shortcutRow("↑ ↓", "Move between rows / list items")
-                shortcutRow("←", "To sidebar (only at page left edge, sidebar open)")
-                shortcutRow("→", "From sidebar → chrome toggle · within chrome → close")
+                shortcutRow("←", "Left edge → sidebar (open) or sidebar button (hidden)")
+                shortcutRow("→", "From sidebar → sidebar button · within chrome → close")
                 shortcutRow("Return", "Enter page from sidebar · activate · open picker · paste from list")
                 shortcutRow("Space", "Step down (on steppers)")
                 shortcutRow("⌘K", "Item actions menu")
@@ -189,8 +189,8 @@ struct GeneralSettingsView: View {
         }
         if vertical, delta < 0 {
             arrowFocusExit?(.chromeLeading)
-        } else if !vertical, delta < 0, sidebarOpenForFocus {
-            arrowFocusExit?(.previous)
+        } else if !vertical, delta < 0 {
+            arrowFocusExit?(arrowExitForLeadingEdge(sidebarOpen: sidebarOpenForFocus))
         }
         return .handled
     }

@@ -81,6 +81,10 @@ struct IgnoreSettingsView: View {
         .onKeyPress(keys: [.upArrow, .downArrow]) { press in
             handleArrow(press.key == .upArrow ? .up : .down, modifiers: press.modifiers)
         }
+        .onKeyPress(keys: [.delete, .deleteForward]) { _ in handleDelete() }
+        .keyboardDeleteFallback(enabled: focus == .list && !fieldActive) {
+            _ = handleDelete()
+        }
         .onKeyPress(.return) { activate() }
         .onKeyPress(.space) { activate() }
         .onKeyPress(.escape) {
@@ -163,8 +167,12 @@ struct IgnoreSettingsView: View {
                     }
                     .tag(app)
                     .keyboardListRow(selected: selectedApp == app, listActive: focus == .list)
+                    .id(app)
                     .contentShape(Rectangle())
-                    .onTapGesture { selectedApp = app }
+                    .onTapGesture {
+                        selectedApp = app
+                        focus = .list
+                    }
                 }
             }
             .arrowListFocus($focus, equals: .list)
@@ -200,8 +208,12 @@ struct IgnoreSettingsView: View {
                     }
                     .tag(type)
                     .keyboardListRow(selected: selectedType == type, listActive: focus == .list)
+                    .id(type)
                     .contentShape(Rectangle())
-                    .onTapGesture { selectedType = type }
+                    .onTapGesture {
+                        selectedType = type
+                        focus = .list
+                    }
                 }
             }
             .arrowListFocus($focus, equals: .list)
@@ -237,8 +249,12 @@ struct IgnoreSettingsView: View {
                     }
                     .tag(pattern)
                     .keyboardListRow(selected: selectedRegex == pattern, listActive: focus == .list)
+                    .id(pattern)
                     .contentShape(Rectangle())
-                    .onTapGesture { selectedRegex = pattern }
+                    .onTapGesture {
+                        selectedRegex = pattern
+                        focus = .list
+                    }
                 }
             }
             .arrowListFocus($focus, equals: .list)
@@ -299,17 +315,30 @@ struct IgnoreSettingsView: View {
         case .listMove:
             return .handled
         case .exitPrevious:
-            if direction == .up {
-                fieldActive = false
-                arrowFocusExit?(current == focusRows.first?.first ? .chromeLeading : .chromeTrailing)
-            } else if direction == .left, sidebarOpenForFocus {
-                fieldActive = false
-                arrowFocusExit?(.previous)
-            }
+            fieldActive = false
+            applyArrowEdgeExit(
+                direction: direction,
+                currentIsLeading: current == focusRows.first?.first || current == .list,
+                sidebarOpen: sidebarOpenForFocus,
+                exit: arrowFocusExit
+            )
             return .handled
         case .exitNext:
             return .handled
         }
+    }
+
+    private func handleDelete() -> KeyPress.Result {
+        guard focus == .list, !fieldActive else { return .ignored }
+        switch selectedTab {
+        case 0:
+            if let selectedApp { removeApp(selectedApp) }
+        case 1:
+            if let selectedType { removeType(selectedType) }
+        default:
+            if let selectedRegex { removeRegex(selectedRegex) }
+        }
+        return .handled
     }
 
     private func ensureListSelection() {
@@ -409,7 +438,11 @@ struct IgnoreSettingsView: View {
     }
 
     private func removeApp(_ app: String) {
+        let index = ignoredApps.firstIndex(of: app)
         ignoredApps.removeAll { $0 == app }
+        if selectedApp == app {
+            selectedApp = adjacentSelection(in: ignoredApps, preferring: index)
+        }
     }
 
     private func addType() {
@@ -419,7 +452,11 @@ struct IgnoreSettingsView: View {
     }
 
     private func removeType(_ type: String) {
+        let index = ignoredPasteboardTypes.firstIndex(of: type)
         ignoredPasteboardTypes.removeAll { $0 == type }
+        if selectedType == type {
+            selectedType = adjacentSelection(in: ignoredPasteboardTypes, preferring: index)
+        }
     }
 
     private func addRegex() {
@@ -429,6 +466,16 @@ struct IgnoreSettingsView: View {
     }
 
     private func removeRegex(_ pattern: String) {
+        let index = ignoredRegexPatterns.firstIndex(of: pattern)
         ignoredRegexPatterns.removeAll { $0 == pattern }
+        if selectedRegex == pattern {
+            selectedRegex = adjacentSelection(in: ignoredRegexPatterns, preferring: index)
+        }
+    }
+
+    private func adjacentSelection(in items: [String], preferring index: Int?) -> String? {
+        guard !items.isEmpty else { return nil }
+        guard let index else { return items.first }
+        return items[min(index, items.count - 1)]
     }
 }

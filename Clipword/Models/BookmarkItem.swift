@@ -1,6 +1,39 @@
 import Foundation
 import SwiftData
 
+@Model
+final class BookmarkFolder {
+    var id: UUID
+    var name: String
+    var createdAt: Date
+    var sortIndex: Int
+
+    @Relationship(deleteRule: .nullify, inverse: \BookmarkItem.folder)
+    var items: [BookmarkItem] = []
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        createdAt: Date = .now,
+        sortIndex: Int = 0
+    ) {
+        self.id = id
+        self.name = name
+        self.createdAt = createdAt
+        self.sortIndex = sortIndex
+    }
+}
+
+extension BookmarkFolder: Hashable {
+    static func == (lhs: BookmarkFolder, rhs: BookmarkFolder) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+}
+
 /// Independent bookmark copy — survives history delete/prune.
 @Model
 final class BookmarkItem {
@@ -19,6 +52,7 @@ final class BookmarkItem {
     var readingTimeSeconds: Int
     var imageData: Data?
     var title: String?
+    var folder: BookmarkFolder?
 
     var contentType: ContentType {
         get { ContentType(rawValue: contentTypeRaw) ?? .text }

@@ -3,7 +3,7 @@ import Defaults
 import SwiftUI
 
 enum ClipboardFocus: Hashable {
-    case typeFilter, appFilter, search, list, edit, bookmark, pin
+    case typeFilter, appFilter, search, list, copy, paste, edit, bookmark, folder, pin
 }
 
 struct ClipboardPopupView: View {
@@ -20,8 +20,14 @@ struct ClipboardPopupView: View {
     @Default(.showSearchField) private var showSearchField
 
     @State private var editingItem: HistoryItem?
+    @State private var isNamingFolder = false
+    @State private var folderNameDraft = ""
+    @State private var assignHistoryItem: HistoryItem?
     @State private var forceSearch = false
     @State private var listScrollTarget: UUID?
+    @State private var toast: HistoryActionEvent?
+    @State private var toastHideTask: Task<Void, Never>?
+    @State private var recentlyActedID: UUID?
     @FocusState private var focus: ClipboardFocus?
     @FocusState private var searchFieldActive: Bool
 
@@ -40,7 +46,7 @@ struct ClipboardPopupView: View {
         if historyStore.displayedItems.isEmpty {
             return [toolbar]
         }
-        return [toolbar, [.list, .edit, .bookmark, .pin]]
+        return [toolbar, [.list, .copy, .paste, .edit, .bookmark, .folder, .pin]]
     }
 
     private var groupedItems: [(String, [HistoryItem])] {
@@ -76,17 +82,37 @@ struct ClipboardPopupView: View {
                     detailPane
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .overlay(alignment: .top) {
+                    if let toast {
+                        ActionFeedbackToast(kind: toast.kind)
+                            .padding(.top, 14)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
+                .animation(.spring(response: 0.36, dampingFraction: 0.78), value: toast?.token)
             }
         }
         .background(.background)
+        .onChange(of: historyStore.lastAction?.token) { _, _ in
+            presentActionFeedback()
+        }
+        .onDisappear { toastHideTask?.cancel() }
         .sheet(item: $editingItem) { item in
             EditContentSheet(item: item)
         }
+        .folderNameAlert(
+            isPresented: $isNamingFolder,
+            title: "New Folder",
+            name: $folderNameDraft,
+            onConfirm: confirmNewFolder
+        )
         .onKeyPress(.rightArrow) { handleArrow(.right) }
         .onKeyPress(.leftArrow) { handleArrow(.left) }
         .onKeyPress(keys: [.upArrow, .downArrow]) { press in
             handleArrow(press.key == .upArrow ? .up : .down, modifiers: press.modifiers)
         }
+        .onKeyPress(keys: [.delete, .deleteForward]) { _ in handleDelete() }
+        .keyboardDeleteFallback(enabled: focus == .list && !searchFieldActive, action: deleteSelectedItem)
         .onKeyPress(.return) { activateFocused() }
         .onKeyPress(.space) { activateFocused(allowListPaste: false) }
         .onKeyPress(.escape) {
@@ -211,9 +237,10 @@ struct ClipboardPopupView: View {
                     ForEach(items) { item in
                         HistoryRowView(
                             item: item,
-                            emphasized: historyStore.selectedItemID == item.id && focus == .list
+                            emphasized: historyStore.selectedItemID == item.id && focus == .list,
+                            recentlyActed: recentlyActedID == item.id
                         )
-                        .tag(item.id)
+                        .id(item.id)
                         .keyboardListRow(
                             selected: historyStore.selectedItemID == item.id,
                             listActive: focus == .list
@@ -221,10 +248,12 @@ struct ClipboardPopupView: View {
                         .contentShape(Rectangle())
                         .onTapGesture {
                             historyStore.selectedItemID = item.id
-                            if NSApp.currentEvent?.clickCount == 2 {
-                                historyStore.select(item, paste: NSEvent.modifierFlags.contains(.option))
-                                appState.hideWindow()
-                            }
+                            searchFieldActive = false
+                            focus = .list
+                        }
+                        .onTapGesture(count: 2) {
+                            historyStore.select(item, paste: NSEvent.modifierFlags.contains(.option))
+                            appState.hideWindow()
                         }
                         .contextMenu { itemContextMenu(for: item) }
                     }
@@ -240,10 +269,8 @@ struct ClipboardPopupView: View {
         .scrollContentBackground(.hidden)
         .arrowListFocus($focus, equals: .list)
         .scrollToVisible(target: listScrollTarget)
-        .onDeleteCommand {
-            guard let item = selectedItem else { return }
-            historyStore.delete(item)
-        }
+        .animation(.snappy(duration: 0.32), value: historyStore.displayedItems.map(\.id))
+        .onDeleteCommand { deleteSelectedItem() }
     }
 
     @ViewBuilder
@@ -252,7 +279,8 @@ struct ClipboardPopupView: View {
             ClipboardDetailPane(
                 item: item,
                 focus: $focus,
-                onEdit: { editingItem = item }
+                onEdit: { editingItem = item },
+                onNewFolder: { beginNewFolder(assigning: item) }
             )
         } else {
             ContentUnavailableView("Select an item", systemImage: "doc.on.clipboard")
@@ -329,17 +357,32 @@ struct ClipboardPopupView: View {
         case .listMove:
             return .handled
         case .exitPrevious:
-            if direction == .up {
-                searchFieldActive = false
-                arrowFocusExit?(current == .typeFilter ? .chromeLeading : .chromeTrailing)
-            } else if direction == .left, sidebarOpenForFocus {
-                searchFieldActive = false
-                arrowFocusExit?(.previous)
-            }
+            searchFieldActive = false
+            applyArrowEdgeExit(
+                direction: direction,
+                currentIsLeading: current == .typeFilter || current == .list,
+                sidebarOpen: sidebarOpenForFocus,
+                exit: arrowFocusExit
+            )
             return .handled
         case .exitNext:
             // Stay on the page for → / ↓ at the edge.
             return .handled
+        }
+    }
+
+    private func handleDelete() -> KeyPress.Result {
+        guard focus == .list, !searchFieldActive else { return .ignored }
+        deleteSelectedItem()
+        return .handled
+    }
+
+    private func deleteSelectedItem() {
+        guard let item = selectedItem else { return }
+        historyStore.delete(item)
+        listScrollTarget = historyStore.selectedItemID
+        if historyStore.displayedItems.isEmpty {
+            focus = focusRows.first?.first ?? .typeFilter
         }
     }
 
@@ -384,10 +427,19 @@ struct ClipboardPopupView: View {
             let strip = NSEvent.modifierFlags.contains(.shift)
             historyStore.select(item, paste: paste, withoutFormatting: strip)
             appState.hideWindow()
+        case .copy:
+            if let item = selectedItem { historyStore.select(item, paste: false) }
+        case .paste:
+            if let item = selectedItem {
+                historyStore.select(item, paste: true)
+                appState.hideWindow()
+            }
         case .edit:
             editingItem = selectedItem
         case .bookmark:
             if let item = selectedItem { historyStore.toggleBookmark(item) }
+        case .folder:
+            if let item = selectedItem { showFolderMenu(for: item) }
         case .pin:
             if let item = selectedItem { historyStore.togglePin(item) }
         case .typeFilter:
@@ -424,6 +476,16 @@ struct ClipboardPopupView: View {
             historyStore.toggleBookmark(item)
         }
         .keyboardShortcut("b", modifiers: .option)
+        Menu("Add to Folder") {
+            BookmarkFolderPickerButtons(
+                folders: historyStore.folders,
+                currentFolderID: historyStore.folder(forHistoryItem: item)?.id,
+                onPick: { folder in
+                    if let folder { historyStore.bookmark(item, in: folder) }
+                },
+                onNew: { beginNewFolder(assigning: item) }
+            )
+        }
         Button(item.isPinned ? "Unpin" : "Pin") { historyStore.togglePin(item) }
             .keyboardShortcut("p", modifiers: .option)
         Divider()
@@ -442,10 +504,49 @@ struct ClipboardPopupView: View {
             edit: { editingItem = item },
             toggleBookmark: { historyStore.toggleBookmark(item) },
             bookmarkTitle: item.isBookmarked ? "Remove Bookmark" : "Bookmark",
+            folders: historyStore.folders.map { ($0.id, $0.name) },
+            currentFolderID: historyStore.folder(forHistoryItem: item)?.id,
+            addToFolder: { id in
+                if let folder = historyStore.folder(id: id) {
+                    historyStore.bookmark(item, in: folder)
+                }
+            },
+            addToNewFolder: { beginNewFolder(assigning: item) },
             togglePin: { historyStore.togglePin(item) },
             pinTitle: item.isPinned ? "Unpin" : "Pin",
             delete: { historyStore.delete(item) }
         )
+    }
+
+    private func showFolderMenu(for item: HistoryItem) {
+        KeyboardContextMenu.popFolderMenu(
+            folders: historyStore.folders.map { ($0.id, $0.name) },
+            currentFolderID: historyStore.folder(forHistoryItem: item)?.id,
+            includeUnfiled: item.isBookmarked,
+            select: { id in
+                if let id, let folder = historyStore.folder(id: id) {
+                    historyStore.bookmark(item, in: folder)
+                } else {
+                    historyStore.bookmark(item, in: nil)
+                }
+            },
+            newFolder: { beginNewFolder(assigning: item) }
+        )
+    }
+
+    private func beginNewFolder(assigning item: HistoryItem) {
+        assignHistoryItem = item
+        folderNameDraft = ""
+        isNamingFolder = true
+    }
+
+    private func confirmNewFolder() {
+        let folder = historyStore.createFolder(named: folderNameDraft)
+        if let item = assignHistoryItem {
+            historyStore.bookmark(item, in: folder)
+            assignHistoryItem = nil
+        }
+        folderNameDraft = ""
     }
 
     private func timelineSection(for date: Date, calendar: Calendar) -> String {
@@ -457,13 +558,39 @@ struct ClipboardPopupView: View {
            date >= monthAgo { return "This Month" }
         return "Older"
     }
+
+    private func presentActionFeedback() {
+        guard let action = historyStore.lastAction else { return }
+        toastHideTask?.cancel()
+        toast = action
+        recentlyActedID = action.itemID
+        if action.kind == .copied {
+            listScrollTarget = action.itemID
+        }
+        toastHideTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1400))
+            guard !Task.isCancelled else { return }
+            toast = nil
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            if recentlyActedID == action.itemID {
+                recentlyActedID = nil
+            }
+        }
+    }
 }
 
 struct ClipboardDetailPane: View {
+    @Environment(AppState.self) private var appState
     @Environment(HistoryStore.self) private var historyStore
     let item: HistoryItem
     var focus: FocusState<ClipboardFocus?>.Binding
     var onEdit: () -> Void = {}
+    var onNewFolder: () -> Void = {}
+
+    @State private var copyFlash = false
+    @State private var pasteFlash = false
+    @State private var flashTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -475,6 +602,15 @@ struct ClipboardDetailPane: View {
             informationSection
                 .padding(20)
         }
+        .onChange(of: historyStore.lastAction?.token) { _, _ in
+            flashMatchingAction()
+        }
+        .onChange(of: item.id) { _, _ in
+            copyFlash = false
+            pasteFlash = false
+            flashTask?.cancel()
+        }
+        .onDisappear { flashTask?.cancel() }
     }
 
     @ViewBuilder
@@ -517,34 +653,162 @@ struct ClipboardDetailPane: View {
             infoRow("Words") {
                 Text("\(item.wordCount)")
             }
-            infoRow("Copied") {
-                Text(copiedLabel(for: item.lastCopiedAt))
+            infoRow("Copies") {
+                Text("\(item.copyCount)")
             }
-            if let pasted = item.lastPastedAt {
-                infoRow("Pasted") {
-                    Text(copiedLabel(for: pasted))
-                }
+            infoRow("Pastes") {
+                Text("\(item.pasteCount)")
             }
 
-            HStack(spacing: 12) {
-                Button("Edit…", action: onEdit)
-                    .buttonStyle(.borderless)
-                    .arrowFocus(focus, equals: .edit)
-                Button(item.isBookmarked ? "Remove Bookmark" : "Bookmark") {
+            activitySection
+
+            HStack(spacing: 8) {
+                DetailIconButton(
+                    systemName: "doc.on.doc",
+                    help: "Copy",
+                    tint: copyFlash ? .green : nil,
+                    flashSuccess: copyFlash,
+                    focus: focus,
+                    focusValue: .copy
+                ) {
+                    historyStore.select(item, paste: false)
+                }
+                DetailIconButton(
+                    systemName: "text.insert",
+                    help: "Paste into focused field",
+                    tint: pasteFlash ? .green : nil,
+                    flashSuccess: pasteFlash,
+                    focus: focus,
+                    focusValue: .paste
+                ) {
+                    historyStore.select(item, paste: true)
+                    appState.hideWindow()
+                }
+                DetailIconButton(
+                    systemName: "pencil",
+                    help: "Edit",
+                    focus: focus,
+                    focusValue: .edit,
+                    action: onEdit
+                )
+                DetailIconButton(
+                    systemName: item.isBookmarked ? "bookmark.fill" : "bookmark",
+                    help: item.isBookmarked ? "Remove Bookmark" : "Bookmark",
+                    tint: item.isBookmarked ? .accentColor : nil,
+                    isActive: item.isBookmarked,
+                    focus: focus,
+                    focusValue: .bookmark
+                ) {
                     historyStore.toggleBookmark(item)
                 }
-                .buttonStyle(.borderless)
-                .arrowFocus(focus, equals: .bookmark)
-                Button(item.isPinned ? "Unpin" : "Pin") {
+                DetailIconButton(
+                    systemName: "folder.badge.plus",
+                    help: folderButtonHelp,
+                    tint: historyStore.folder(forHistoryItem: item) != nil ? .accentColor : nil,
+                    isActive: historyStore.folder(forHistoryItem: item) != nil,
+                    focus: focus,
+                    focusValue: .folder
+                ) {
+                    showFolderMenu()
+                }
+                DetailIconButton(
+                    systemName: item.isPinned ? "pin.fill" : "pin",
+                    help: item.isPinned ? "Unpin" : "Pin",
+                    tint: item.isPinned ? .orange : nil,
+                    isActive: item.isPinned,
+                    focus: focus,
+                    focusValue: .pin
+                ) {
                     historyStore.togglePin(item)
                 }
-                .buttonStyle(.borderless)
-                .arrowFocus(focus, equals: .pin)
                 Spacer()
             }
-            .padding(.top, 4)
+            .padding(.top, 18)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var activitySection: some View {
+        let events = item.activityTimeline
+        VStack(alignment: .leading, spacing: 8) {
+            Text("History")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            if events.contains(where: \.isSynthesized), item.copyCount > events.filter({ $0.kind == .copied }).count {
+                Text("Older copies were counted but not logged individually.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 6) {
+                    ForEach(events) { event in
+                        HStack(spacing: 8) {
+                            Image(systemName: event.kind.systemImage)
+                                .frame(width: 14)
+                                .foregroundStyle(.secondary)
+                            Text(event.kind.label)
+                            if let bundleId = event.applicationBundleId {
+                                Text(appName(for: bundleId))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 8)
+                            Text(copiedLabel(for: event.date))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        .font(.caption)
+                    }
+                }
+            }
+            .frame(maxHeight: 120)
+        }
+        .padding(.top, 4)
+    }
+
+    private var folderButtonHelp: String {
+        if let folder = historyStore.folder(forHistoryItem: item) {
+            return "In “\(folder.name)” — move or add to another folder"
+        }
+        return "Add to folder"
+    }
+
+    private func showFolderMenu() {
+        KeyboardContextMenu.popFolderMenu(
+            folders: historyStore.folders.map { ($0.id, $0.name) },
+            currentFolderID: historyStore.folder(forHistoryItem: item)?.id,
+            includeUnfiled: item.isBookmarked,
+            select: { id in
+                if let id, let folder = historyStore.folder(id: id) {
+                    historyStore.bookmark(item, in: folder)
+                } else {
+                    historyStore.bookmark(item, in: nil)
+                }
+            },
+            newFolder: onNewFolder
+        )
+    }
+
+    private func flashMatchingAction() {
+        guard let action = historyStore.lastAction, action.itemID == item.id else { return }
+        flashTask?.cancel()
+        switch action.kind {
+        case .copied:
+            copyFlash = true
+            pasteFlash = false
+        case .pasted:
+            pasteFlash = true
+            copyFlash = false
+        default:
+            return
+        }
+        flashTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1100))
+            guard !Task.isCancelled else { return }
+            copyFlash = false
+            pasteFlash = false
+        }
     }
 
     private func infoRow<Content: View>(_ label: String, @ViewBuilder value: () -> Content) -> some View {

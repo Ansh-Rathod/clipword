@@ -32,7 +32,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         print("[Clipword] launched pid \(ProcessInfo.processInfo.processIdentifier), inlineSuggestions=\(Defaults[.inlineSuggestionsEnabled]), trigger=\(Defaults[.inlineTriggerMode].rawValue)")
         migrateDefaultsIfNeeded()
 
-        let schema = Schema([HistoryItem.self, WordFrequency.self, DailyStats.self, BookmarkItem.self])
+        let schema = Schema([
+            HistoryItem.self,
+            ClipboardEvent.self,
+            WordFrequency.self,
+            DailyStats.self,
+            BookmarkItem.self,
+            BookmarkFolder.self,
+        ])
         let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("Clipword", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

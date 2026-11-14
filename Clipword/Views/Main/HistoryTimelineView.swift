@@ -6,6 +6,9 @@ struct HistoryTimelineView: View {
     @Environment(SearchService.self) private var searchService
 
     @State private var searchText = ""
+    @State private var isNamingFolder = false
+    @State private var folderNameDraft = ""
+    @State private var assignHistoryItem: HistoryItem?
 
     private var groupedItems: [(String, [HistoryItem])] {
         let items = filteredItems.sorted { $0.lastCopiedAt > $1.lastCopiedAt }
@@ -52,6 +55,10 @@ struct HistoryTimelineView: View {
                                     historyStore.select(item, paste: true)
                                 } onDelete: {
                                     historyStore.delete(item)
+                                } onNewFolder: {
+                                    assignHistoryItem = item
+                                    folderNameDraft = ""
+                                    isNamingFolder = true
                                 }
                             }
                         }
@@ -61,6 +68,19 @@ struct HistoryTimelineView: View {
             }
         }
         .onAppear { historyStore.reload() }
+        .folderNameAlert(
+            isPresented: $isNamingFolder,
+            title: "New Folder",
+            name: $folderNameDraft,
+            onConfirm: {
+                let folder = historyStore.createFolder(named: folderNameDraft)
+                if let item = assignHistoryItem {
+                    historyStore.bookmark(item, in: folder)
+                    assignHistoryItem = nil
+                }
+                folderNameDraft = ""
+            }
+        )
     }
 
     private func timelineSection(for date: Date, calendar: Calendar) -> String {
@@ -75,10 +95,12 @@ struct HistoryTimelineView: View {
 }
 
 struct TimelineRowView: View {
+    @Environment(HistoryStore.self) private var historyStore
     let item: HistoryItem
     let onCopy: () -> Void
     let onPaste: () -> Void
     let onDelete: () -> Void
+    var onNewFolder: () -> Void = {}
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -142,6 +164,20 @@ struct TimelineRowView: View {
             Button("Copy", action: onCopy)
                 .keyboardShortcut("c")
             Button("Paste", action: onPaste)
+            Divider()
+            Button(item.isBookmarked ? "Remove Bookmark" : "Bookmark") {
+                historyStore.toggleBookmark(item)
+            }
+            Menu("Add to Folder") {
+                BookmarkFolderPickerButtons(
+                    folders: historyStore.folders,
+                    currentFolderID: historyStore.folder(forHistoryItem: item)?.id,
+                    onPick: { folder in
+                        if let folder { historyStore.bookmark(item, in: folder) }
+                    },
+                    onNew: onNewFolder
+                )
+            }
             Divider()
             Button("Delete", role: .destructive, action: onDelete)
                 .keyboardShortcut(.delete, modifiers: .command)

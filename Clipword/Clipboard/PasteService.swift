@@ -4,11 +4,25 @@ import Foundation
 
 @MainActor
 enum PasteService {
+    /// Process-local: the system sheet for Device Control / Data Access
+    /// (formerly Accessibility) must not be shown more than once per launch.
+    private static var didPromptThisProcess = false
+
+    /// Live TCC check. `AXIsProcessTrusted()` can stay false after the user
+    /// enables Device Control and Data Access until the cached result expires;
+    /// `WithOptions(nil)` asks tccd again without showing a prompt.
     static var isAccessibilityTrusted: Bool {
-        AXIsProcessTrusted()
+        AXIsProcessTrustedWithOptions(nil)
     }
 
+    /// Shows the system permission sheet at most once per process, and only
+    /// when not already trusted. Launch paths must not call this — creating a
+    /// global key monitor or prompting on every open re-pops Device Control
+    /// and Device Access even after the toggle is on.
     static func requestAccessibility() {
+        guard !isAccessibilityTrusted else { return }
+        guard !didPromptThisProcess else { return }
+        didPromptThisProcess = true
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
     }

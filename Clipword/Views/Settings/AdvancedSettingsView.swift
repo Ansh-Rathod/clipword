@@ -89,11 +89,11 @@ struct AdvancedSettingsView: View {
                             appState.typingMonitor.stop()
                         }
                     }
-                Text("Requires Accessibility permission. Only typed words are counted separately from clipboard words.")
+                Text("Requires Device Control and Data Access. Only typed words are counted separately from clipboard words.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Section("Accessibility") {
+            Section("Device Access") {
                 LabeledContent("Permission") {
                     if PasteService.isAccessibilityTrusted {
                         Label("Granted", systemImage: "checkmark.circle.fill")
@@ -106,6 +106,9 @@ struct AdvancedSettingsView: View {
                         .id(AdvancedFocus.requestPermission)
                     }
                 }
+                Text("macOS lists this as Device Control and Data Access. Clipword only asks when you press this button or paste — not on every launch.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -144,8 +147,8 @@ struct AdvancedSettingsView: View {
         }
         if vertical, delta < 0 {
             arrowFocusExit?(.chromeLeading)
-        } else if !vertical, delta < 0, sidebarOpenForFocus {
-            arrowFocusExit?(.previous)
+        } else if !vertical, delta < 0 {
+            arrowFocusExit?(arrowExitForLeadingEdge(sidebarOpen: sidebarOpenForFocus))
         }
         return .handled
     }

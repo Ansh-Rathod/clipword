@@ -1,7 +1,18 @@
+import AppKit
 import Defaults
 import Foundation
 import Observation
 import SwiftData
+
+enum HistoryActionKind: Equatable {
+    case copied, pasted, bookmarked, unbookmarked, pinned, unpinned
+}
+
+struct HistoryActionEvent: Equatable {
+    let kind: HistoryActionKind
+    let itemID: UUID
+    let token: Int
+}
 
 @Observable
 @MainActor
@@ -15,6 +26,8 @@ final class HistoryStore {
     var activeAppBundleId: String?
 
     private var analyticsEngine: AnalyticsEngine?
+    private(set) var lastAction: HistoryActionEvent?
+    private var actionToken = 0
 
     /// Legacy categories are backfilled once per install, off the launch path, and
     /// only for bounded payloads — decoding/classifying a multi-MB blob on the
@@ -25,6 +38,9 @@ final class HistoryStore {
     /// store is drained, so this is a batch size, not a cap.
     private static let retentionPruneBatchSize = 1000
 
+    /// Caps the per-entry copy/paste log so a hot snippet can't grow forever.
+    private static let maxEventsPerItem = 200
+
     private var retentionTimer: Timer?
 
     init(modelContext: ModelContext) {
@@ -32,6 +48,7 @@ final class HistoryStore {
         pruneByRetention()
         reload()
         reloadBookmarks()
+        reloadFolders()
         scheduleRetentionPrune()
     }
 
@@ -212,7 +229,9 @@ final class HistoryStore {
         if let existing = findDuplicate(data: data, snapshot: snapshot) {
             existing.lastCopiedAt = .now
             existing.copyCount += 1
+            recordEvent(.copied, on: existing)
             try? modelContext.save()
+            analyticsEngine?.recordCopy(item: existing)
             refreshWithoutFetch()
             return existing
         }
@@ -238,6 +257,7 @@ final class HistoryStore {
             title: snapshot.plainText.map(boundedTitle)
         )
         modelContext.insert(item)
+        recordEvent(.copied, on: item)
         try? modelContext.save()
         let removed = prune()
         analyticsEngine?.recordCopy(item: item)
@@ -246,7 +266,7 @@ final class HistoryStore {
         // for ~2s per copy). Update the in-memory list instead.
         items.removeAll { removed.contains($0) }
         items.append(item)
-        refreshWithoutFetch()
+        refreshWithoutFetch(removing: Set(removed.map(\.id)))
         scheduleCategoryBackfill()
 
         if snapshot.contentType == .image, let imageData = snapshot.imageData {
@@ -318,8 +338,13 @@ final class HistoryStore {
     /// Re-sorts and re-filters the in-memory list after a write without touching
     /// the store. Unlike `reload()`, this never re-materializes blob columns, so
     /// it stays fast even when huge payloads are in the database.
-    private func refreshWithoutFetch() {
-        items.removeAll { $0.isDeleted }
+    ///
+    /// Pass `removing` for deletes: SwiftData's `isDeleted` is often false after
+    /// `save()`, so relying on it left the row in the UI until the next launch.
+    private func refreshWithoutFetch(removing ids: Set<UUID> = []) {
+        items = items.filter { item in
+            !ids.contains(item.id)
+        }
         switch Defaults[.sortOrder] {
         case .lastCopied:
             items.sort { $0.lastCopiedAt > $1.lastCopiedAt }
@@ -334,20 +359,47 @@ final class HistoryStore {
     func select(_ item: HistoryItem, paste: Bool, withoutFormatting: Bool = false) {
         guard let snapshot = PasteboardSnapshot.decode(from: item.contentData) else { return }
         let strip = withoutFormatting || Defaults[.pasteWithoutFormatting]
+        // Clipword writes its own marker, but unformatted writes skip it —
+        // ignore the next monitor tick so we don't double-count this copy.
+        Defaults[.ignoreNextEvent] = true
         PasteService.copyToClipboard(snapshot: snapshot, withoutFormatting: strip)
+        item.lastCopiedAt = .now
+        item.copyCount += 1
+        recordEvent(.copied, on: item)
         let shouldPaste = paste || Defaults[.pasteAutomatically]
         if shouldPaste {
             item.pasteCount += 1
             item.lastPastedAt = .now
+            recordEvent(.pasted, on: item)
             try? modelContext.save()
             analyticsEngine?.recordPaste(item: item)
+            publishAction(.pasted, itemID: item.id)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 PasteService.paste(item: item)
             }
         } else {
             try? modelContext.save()
+            publishAction(.copied, itemID: item.id)
         }
         refreshWithoutFetch()
+    }
+
+    private func recordEvent(_ kind: ClipboardEventKind, on item: HistoryItem) {
+        let event = ClipboardEvent(
+            kind: kind,
+            applicationBundleId: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+            item: item
+        )
+        modelContext.insert(event)
+        if !item.events.contains(where: { $0.id == event.id }) {
+            item.events.append(event)
+        }
+        let extras = item.events
+            .sorted { $0.occurredAt > $1.occurredAt }
+            .dropFirst(Self.maxEventsPerItem)
+        for extra in extras {
+            modelContext.delete(extra)
+        }
     }
 
     func updateContent(_ item: HistoryItem, content: String) {
@@ -370,6 +422,7 @@ final class HistoryStore {
     func togglePin(_ item: HistoryItem) {
         item.isPinned.toggle()
         try? modelContext.save()
+        publishAction(item.isPinned ? .pinned : .unpinned, itemID: item.id)
         refreshWithoutFetch()
     }
 
@@ -383,7 +436,42 @@ final class HistoryStore {
         }
         try? modelContext.save()
         reloadBookmarks()
+        reloadFolders()
+        publishAction(item.isBookmarked ? .bookmarked : .unbookmarked, itemID: item.id)
         refreshWithoutFetch()
+    }
+
+    /// Bookmarks `item` and puts it in `folder` (or Unfiled when nil). If it is
+    /// already bookmarked, only the folder assignment changes.
+    func bookmark(_ item: HistoryItem, in folder: BookmarkFolder?) {
+        if let existing = findBookmark(matching: item.contentData) {
+            existing.folder = folder
+            item.isBookmarked = true
+        } else {
+            let bookmark = BookmarkItem(from: item)
+            bookmark.folder = folder
+            modelContext.insert(bookmark)
+            item.isBookmarked = true
+        }
+        try? modelContext.save()
+        reloadBookmarks()
+        reloadFolders()
+        publishAction(.bookmarked, itemID: item.id)
+        refreshWithoutFetch()
+    }
+
+    func folder(forHistoryItem item: HistoryItem) -> BookmarkFolder? {
+        findBookmark(matching: item.contentData)?.folder
+    }
+
+    func folder(id: UUID) -> BookmarkFolder? {
+        folders.first { $0.id == id }
+    }
+
+    private func publishAction(_ kind: HistoryActionKind, itemID: UUID) {
+        actionToken += 1
+        lastAction = HistoryActionEvent(kind: kind, itemID: itemID, token: actionToken)
+        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
     }
 
     func isContentBookmarked(_ contentData: Data) -> Bool {
@@ -391,6 +479,7 @@ final class HistoryStore {
     }
 
     private(set) var bookmarks: [BookmarkItem] = []
+    private(set) var folders: [BookmarkFolder] = []
     var selectedBookmarkID: UUID?
 
     func reloadBookmarks() {
@@ -399,6 +488,49 @@ final class HistoryStore {
         )
         bookmarks = (try? modelContext.fetch(descriptor)) ?? []
         migrateLegacyBookmarksIfNeeded()
+    }
+
+    func reloadFolders() {
+        let descriptor = FetchDescriptor<BookmarkFolder>(
+            sortBy: [SortDescriptor(\.sortIndex), SortDescriptor(\.createdAt)]
+        )
+        folders = (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    @discardableResult
+    func createFolder(named name: String) -> BookmarkFolder {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nextIndex = (folders.map(\.sortIndex).max() ?? -1) + 1
+        let folder = BookmarkFolder(
+            name: trimmed.isEmpty ? "Untitled" : trimmed,
+            sortIndex: nextIndex
+        )
+        modelContext.insert(folder)
+        try? modelContext.save()
+        reloadFolders()
+        return folder
+    }
+
+    func renameFolder(_ folder: BookmarkFolder, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        folder.name = trimmed.isEmpty ? "Untitled" : trimmed
+        try? modelContext.save()
+        reloadFolders()
+        reloadBookmarks()
+    }
+
+    func deleteFolder(_ folder: BookmarkFolder) {
+        modelContext.delete(folder)
+        try? modelContext.save()
+        reloadFolders()
+        reloadBookmarks()
+    }
+
+    func moveBookmark(_ item: BookmarkItem, to folder: BookmarkFolder?) {
+        item.folder = folder
+        try? modelContext.save()
+        reloadBookmarks()
+        reloadFolders()
     }
 
     private var didMigrateBookmarks = false
@@ -463,11 +595,16 @@ final class HistoryStore {
         if let history = items.first(where: { $0.contentData == item.contentData }) {
             history.isBookmarked = false
         }
+        let index = bookmarks.firstIndex(where: { $0.id == item.id })
+        let wasSelected = selectedBookmarkID == item.id
         modelContext.delete(item)
         try? modelContext.save()
-        if selectedBookmarkID == item.id { selectedBookmarkID = nil }
         reloadBookmarks()
+        reloadFolders()
         refreshWithoutFetch()
+        if wasSelected {
+            selectedBookmarkID = Self.adjacentID(in: bookmarks, preferring: index)
+        }
     }
 
     var bookmarkedItems: [HistoryItem] {
@@ -475,18 +612,33 @@ final class HistoryStore {
     }
 
     func delete(_ item: HistoryItem) {
+        let id = item.id
+        let index = displayedItems.firstIndex(where: { $0.id == id })
+        let wasSelected = selectedItemID == id
         modelContext.delete(item)
         try? modelContext.save()
-        if selectedItemID == item.id { selectedItemID = nil }
-        refreshWithoutFetch()
+        refreshWithoutFetch(removing: [id])
+        if wasSelected {
+            selectedItemID = Self.adjacentID(in: displayedItems, preferring: index)
+        }
+    }
+
+    /// After a delete, keep a neighbor highlighted so arrow keys and another
+    /// Delete have a target. Prefers the item that slid into `index`.
+    private static func adjacentID<T: Identifiable>(in items: [T], preferring index: Int?) -> T.ID? {
+        guard !items.isEmpty else { return nil }
+        guard let index else { return items.first?.id }
+        return items[min(index, items.count - 1)].id
     }
 
     func clear(unpinnedOnly: Bool) {
-        for item in items where unpinnedOnly ? !item.isPinned : true {
+        let removed = items.filter { unpinnedOnly ? !$0.isPinned : true }
+        let ids = Set(removed.map(\.id))
+        for item in removed {
             modelContext.delete(item)
         }
         try? modelContext.save()
-        refreshWithoutFetch()
+        refreshWithoutFetch(removing: ids)
     }
 
     func addToPasteStack(_ item: HistoryItem) {

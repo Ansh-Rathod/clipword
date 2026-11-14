@@ -51,9 +51,8 @@ final class InlineSuggestionService {
 
     private func start() {
         guard !isRunning else { return }
-        guard AXIsProcessTrusted() else {
-            print("[InlineSuggestions] Accessibility permission missing — requesting")
-            PasteService.requestAccessibility()
+        guard PasteService.isAccessibilityTrusted else {
+            print("[InlineSuggestions] Device Control / Data Access not granted — auto mode idle")
             return
         }
         print("[InlineSuggestions] running (auto mode, minChars \(Defaults[.inlineMinChars]), debounce \(Defaults[.inlineDebounceMs])ms)")

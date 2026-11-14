@@ -1,6 +1,62 @@
 import Foundation
 import SwiftData
 
+enum ClipboardEventKind: String, Codable, CaseIterable {
+    case copied
+    case pasted
+
+    var label: String {
+        switch self {
+        case .copied: "Copied"
+        case .pasted: "Pasted"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .copied: "doc.on.doc"
+        case .pasted: "text.insert"
+        }
+    }
+}
+
+/// One copy or paste of a history entry. Survives as long as the parent item.
+@Model
+final class ClipboardEvent {
+    var id: UUID
+    var kindRaw: String
+    var occurredAt: Date
+    var applicationBundleId: String?
+    var item: HistoryItem?
+
+    var kind: ClipboardEventKind {
+        get { ClipboardEventKind(rawValue: kindRaw) ?? .copied }
+        set { kindRaw = newValue.rawValue }
+    }
+
+    init(
+        id: UUID = UUID(),
+        kind: ClipboardEventKind,
+        occurredAt: Date = .now,
+        applicationBundleId: String? = nil,
+        item: HistoryItem? = nil
+    ) {
+        self.id = id
+        self.kindRaw = kind.rawValue
+        self.occurredAt = occurredAt
+        self.applicationBundleId = applicationBundleId
+        self.item = item
+    }
+}
+
+struct ItemActivityEvent: Identifiable, Hashable {
+    let id: UUID
+    let kind: ClipboardEventKind
+    let date: Date
+    let applicationBundleId: String?
+    var isSynthesized: Bool = false
+}
+
 @Model
 final class HistoryItem {
     var id: UUID
@@ -25,6 +81,9 @@ final class HistoryItem {
     var readingTimeSeconds: Int
     var imageData: Data?
     var title: String?
+
+    @Relationship(deleteRule: .cascade, inverse: \ClipboardEvent.item)
+    var events: [ClipboardEvent] = []
 
     var contentType: ContentType {
         get { ContentType(rawValue: contentTypeRaw) ?? .text }
@@ -115,7 +174,60 @@ final class HistoryItem {
         if wordCount > 0 { parts.append("\(wordCount) words") }
         if lineCount > 0 { parts.append("\(lineCount) lines") }
         if copyCount > 1 { parts.append("×\(copyCount)") }
+        if pasteCount > 0 { parts.append("\(pasteCount) pastes") }
         return parts.joined(separator: " · ")
+    }
+
+    /// Newest-first copy/paste log. Falls back to first/last timestamps for
+    /// items that predate per-event tracking.
+    var activityTimeline: [ItemActivityEvent] {
+        let stored = events
+            .sorted { $0.occurredAt > $1.occurredAt }
+            .map {
+                ItemActivityEvent(
+                    id: $0.id,
+                    kind: $0.kind,
+                    date: $0.occurredAt,
+                    applicationBundleId: $0.applicationBundleId
+                )
+            }
+        if !stored.isEmpty { return stored }
+        return Self.synthesizedTimeline(from: self)
+    }
+
+    private static func synthesizedTimeline(from item: HistoryItem) -> [ItemActivityEvent] {
+        var result: [ItemActivityEvent] = [
+            ItemActivityEvent(
+                id: item.id,
+                kind: .copied,
+                date: item.firstCopiedAt,
+                applicationBundleId: item.applicationBundleId,
+                isSynthesized: true
+            )
+        ]
+        if item.copyCount > 1, item.lastCopiedAt != item.firstCopiedAt {
+            result.append(
+                ItemActivityEvent(
+                    id: UUID(),
+                    kind: .copied,
+                    date: item.lastCopiedAt,
+                    applicationBundleId: item.applicationBundleId,
+                    isSynthesized: true
+                )
+            )
+        }
+        if let pasted = item.lastPastedAt, item.pasteCount > 0 {
+            result.append(
+                ItemActivityEvent(
+                    id: UUID(),
+                    kind: .pasted,
+                    date: pasted,
+                    applicationBundleId: nil,
+                    isSynthesized: true
+                )
+            )
+        }
+        return result.sorted { $0.date > $1.date }
     }
 }
 

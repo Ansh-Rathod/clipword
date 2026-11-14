@@ -94,8 +94,8 @@ struct StorageSettingsView: View {
         }
         if vertical, delta < 0 {
             arrowFocusExit?(.chromeLeading)
-        } else if !vertical, delta < 0, sidebarOpenForFocus {
-            arrowFocusExit?(.previous)
+        } else if !vertical, delta < 0 {
+            arrowFocusExit?(arrowExitForLeadingEdge(sidebarOpen: sidebarOpenForFocus))
         }
         return .handled
     }

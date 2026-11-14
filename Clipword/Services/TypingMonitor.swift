@@ -34,11 +34,9 @@ final class TypingMonitor {
 
     func start() {
         guard !isRunning else { return }
-        guard AXIsProcessTrusted() else {
-            PasteService.requestAccessibility()
-            Defaults[.typingAnalyticsEnabled] = false
-            return
-        }
+        // Silent: a launch-time prompt re-shows Device Control / Device Access
+        // even when the toggle is already on.
+        guard PasteService.isAccessibilityTrusted else { return }
 
         monitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             Task { @MainActor in

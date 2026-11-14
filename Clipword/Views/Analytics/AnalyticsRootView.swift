@@ -174,8 +174,8 @@ struct AnalyticsRootView: View {
         }
         if vertical, delta < 0 {
             arrowFocusExit?(current == .section ? .chromeLeading : .chromeTrailing)
-        } else if !vertical, delta < 0, sidebarOpenForFocus {
-            arrowFocusExit?(.previous)
+        } else if !vertical, delta < 0 {
+            arrowFocusExit?(arrowExitForLeadingEdge(sidebarOpen: sidebarOpenForFocus))
         }
         return .handled
     }

@@ -6,6 +6,9 @@ import SwiftUI
 final class StatusBarController: NSObject {
     private var statusItem: NSStatusItem?
     private var appState: AppState?
+    /// Accessory apps often receive the waking click twice. The second one
+    /// toggles the window shut, so the first menu-bar click looks ignored.
+    private var lastLeftClick = Date.distantPast
 
     func install(appState: AppState) {
         self.appState = appState
@@ -16,18 +19,23 @@ final class StatusBarController: NSObject {
             button.image?.isTemplate = true
             button.target = self
             button.action = #selector(statusItemClicked(_:))
-            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            // mouseUp is swallowed the first time the app is inactive. mouseDown
+            // is delivered, and is what actually opens the window on the first click.
+            button.sendAction(on: [.leftMouseDown, .rightMouseDown])
             WindowManager.shared.setStatusButton(button)
         }
         statusItem = item
     }
 
     @objc func statusItemClicked(_ sender: Any?) {
-        let event = NSApp.currentEvent
-        if event?.type == .rightMouseUp {
+        let type = NSApp.currentEvent?.type
+        if type == .rightMouseDown || type == .rightMouseUp {
             showContextMenu()
             return
         }
+        let now = Date()
+        if now.timeIntervalSince(lastLeftClick) < 0.3 { return }
+        lastLeftClick = now
         appState?.toggleWindow(section: .clipboard, fromStatusItem: true)
     }
 

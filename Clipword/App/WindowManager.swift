@@ -21,8 +21,21 @@ final class WindowManager {
     private weak var appState: AppState?
     private weak var statusButton: NSStatusBarButton?
     private var resignObserver: NSObjectProtocol?
+    private var activateObserver: NSObjectProtocol?
     /// App that was frontmost before the popup opened; pastes are delivered to it.
     private var previousApp: NSRunningApplication?
+    /// Bumped on every show and hide so a late re-show from an older open cannot
+    /// resurrect a window the user already dismissed.
+    private var showGeneration = 0
+    /// True while a show is still settling. Accessory apps resign active for a
+    /// moment as they come forward; hiding on that flicker is why the first
+    /// click or shortcut appears to do nothing.
+    private var suppressFocusLossHide = false
+    private var wantsMainWindow = false
+    private var isPresenting = false
+    /// Set once this show has actually brought Clipword forward. Distinguishes
+    /// "activation hasn't landed yet" from "the user already switched away".
+    private var activationLanded = false
 
     func configure(historyStore: HistoryStore, analyticsEngine: AnalyticsEngine, appState: AppState) {
         self.historyStore = historyStore
@@ -35,7 +48,18 @@ final class WindowManager {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor in
-                    self?.hideMainWindow()
+                    self?.hideBecauseFocusLeft()
+                }
+            }
+        }
+        if activateObserver == nil {
+            activateObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.restoreIfActivationLanded()
                 }
             }
         }
@@ -86,19 +110,21 @@ final class WindowManager {
 
             let panel = KeyablePanel(
                 contentRect: hosting.frame,
-                styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
+                styleMask: [.borderless, .fullSizeContentView],
                 backing: .buffered,
                 defer: false
             )
             panel.isFloatingPanel = true
             panel.level = .floating
-            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+            // No `.transient`: that flag hides the panel the moment the app is
+            // inactive, which is still true while an accessory app is activating.
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             // false so buttons keep pointing-hand cursor / hit testing
             panel.isMovableByWindowBackground = false
             panel.backgroundColor = .clear
             panel.isOpaque = false
             panel.hasShadow = true
-            panel.hidesOnDeactivate = true
+            panel.hidesOnDeactivate = false
             panel.isReleasedWhenClosed = false
             panel.becomesKeyOnlyIfNeeded = false
             panel.contentView = hosting
@@ -110,6 +136,14 @@ final class WindowManager {
         }
 
         guard let panel else { return }
+        showGeneration += 1
+        let generation = showGeneration
+        wantsMainWindow = true
+        activationLanded = false
+        // Cover the whole activation handshake, not just the current turn.
+        // didResignActive often arrives a beat after activate() returns.
+        suppressFocusLossHide = true
+
         // Remember who the user came from so pastes can return to that app.
         if let frontmost = NSWorkspace.shared.frontmostApplication,
            frontmost.processIdentifier != ProcessInfo.processInfo.processIdentifier {
@@ -117,22 +151,79 @@ final class WindowManager {
         }
         applyChrome(to: panel)
         positionPanel(panel, fromStatusItem: fromStatusItem)
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
-        panel.orderFrontRegardless()
+        // Order front before activate. Activating an accessory app with nothing
+        // on screen makes macOS resign immediately, and a panel shown during
+        // that resign is discarded — the first click/shortcut never appears.
+        present(panel)
         appState.windowPresentationToken += 1
 
-        DispatchQueue.main.async { [weak panel] in
-            guard let panel else { return }
+        DispatchQueue.main.async { [weak self, weak panel] in
+            guard let self, let panel, self.showGeneration == generation else { return }
             self.applyChrome(to: panel)
+            self.present(panel)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self, weak panel] in
+            guard let self, let panel, self.showGeneration == generation else { return }
+            if !panel.isVisible || (!NSApp.isActive && !self.activationLanded) {
+                // Still hidden, or activation never stuck. Try once more.
+                self.present(panel)
+                self.releaseFocusLossSuppression(for: generation, after: 0.2)
+            } else if panel.isVisible && !NSApp.isActive && self.activationLanded {
+                // Came forward, then the user left during the grace period.
+                self.hideMainWindow()
+            } else {
+                if !panel.isKeyWindow { panel.makeKey() }
+                self.suppressFocusLossHide = false
+            }
+        }
+    }
+
+    private func releaseFocusLossSuppression(for generation: Int, after delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.showGeneration == generation else { return }
+            self.suppressFocusLossHide = false
         }
     }
 
     func hideMainWindow() {
+        showGeneration += 1
+        wantsMainWindow = false
+        suppressFocusLossHide = false
         if let panel {
             Defaults[.popupLastFrame] = NSStringFromRect(panel.frame)
         }
         panel?.orderOut(nil)
+    }
+
+    /// Resign notifications that are part of coming forward, not the user leaving.
+    func hideBecauseFocusLeft() {
+        guard wantsMainWindow, !suppressFocusLossHide else { return }
+        hideMainWindow()
+    }
+
+    /// activate() finishes after show() returns. If the panel was dropped on the
+    /// way up, put it back once the app is actually frontmost.
+    private func restoreIfActivationLanded() {
+        activationLanded = true
+        guard wantsMainWindow, let panel else { return }
+        if !panel.isVisible {
+            present(panel)
+        } else if !panel.isKeyWindow {
+            panel.makeKey()
+        }
+    }
+
+    private func present(_ panel: NSPanel) {
+        if isPresenting { return }
+        isPresenting = true
+        defer { isPresenting = false }
+
+        panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        panel.orderFrontRegardless()
     }
 
     /// Snippet palette (and other flows that don't show the main window)
@@ -172,12 +263,12 @@ final class WindowManager {
     private func applyChrome(to window: NSWindow) {
         window.toolbar = nil
         window.title = ""
-        window.styleMask = [.borderless, .nonactivatingPanel, .fullSizeContentView]
+        window.styleMask = [.borderless, .fullSizeContentView]
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.backgroundColor = .clear
         window.isOpaque = false
-        window.hidesOnDeactivate = true
+        window.hidesOnDeactivate = false
         window.isMovableByWindowBackground = false
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
@@ -296,7 +387,7 @@ private final class PanelDelegate: NSObject, NSWindowDelegate {
             // Stay open for in-app menus/popovers (pickers, context menus).
             // Close only when focus left the app (outside click, Raycast, etc.).
             guard !NSApp.isActive else { return }
-            self?.manager?.hideMainWindow()
+            self?.manager?.hideBecauseFocusLeft()
         }
     }
 

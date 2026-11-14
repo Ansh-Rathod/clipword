@@ -171,7 +171,8 @@ struct MainRootView: View {
     }
 
     private var sidebar: some View {
-        List {
+        @Bindable var appState = appState
+        return List {
             Section {
                 ForEach(MainSection.primary) { section in
                     sidebarRow(section)
@@ -192,7 +193,7 @@ struct MainRootView: View {
         let selected = appState.mainSection == section
         let active = chromeFocus == .sidebar
         return Label(section.title, systemImage: section.systemImage)
-            .tag(section)
+            .id(section)
             .foregroundStyle(selected && active ? Color.white : Color.primary)
             .keyboardListRow(selected: selected, listActive: active)
             .contentShape(Rectangle())
@@ -219,10 +220,19 @@ struct MainRootView: View {
         }
     }
 
+    /// Two layouts, same keys:
+    ///
+    /// Sidebar **open**:  `[sidebar] | [toggle] …… [close]`
+    ///                    `          | [page]`
+    ///   ← from toggle enters the sidebar; → from sidebar returns to the toggle.
+    ///
+    /// Sidebar **closed**: `[toggle] …… [close]`
+    ///                    `[page]`
+    ///   ← from the page's left edge lands on the toggle (there is no sidebar
+    ///   column). ↓ from either chrome button enters the page.
     private func handleChromeArrow(_ direction: SpatialDirection) -> KeyPress.Result {
         guard let current = chromeFocus else { return .ignored }
 
-        // Sidebar column: ↑↓ cycle sections; → chrome toggle; ← noop
         if current == .sidebar {
             switch direction {
             case .up:
@@ -332,7 +342,7 @@ struct MainRootView: View {
     private func handleContentExit(_ direction: ArrowFocusExitDirection) {
         switch direction {
         case .previous:
-            // Esc from a page (or ← at left edge): highlight the sidebar, or its toggle when hidden.
+            // Esc, or ← at the page's left edge while the sidebar is open.
             chromeFocus = showSidebar ? .sidebar : .sidebarToggle
         case .chromeLeading:
             chromeFocus = .sidebarToggle
