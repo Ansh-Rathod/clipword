@@ -73,31 +73,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Defaults[.ignoredApps] = apps
             Defaults[.didSetDefaultIgnoredApps] = true
         }
-        removeLegacyOptionHotkeys()
+        removeRetiredItemHotkeys()
     }
 
-    /// Earlier builds shipped ⌥P/⌥B/⌥⌫ as *defaults* for pin/bookmark/delete,
-    /// and KeyboardShortcuts persisted them to UserDefaults — where they were
-    /// registered as global Carbon hotkeys, eating ⌥⌫ (delete-word) in every
-    /// app. Drop the persisted values that exactly match those old defaults.
-    private func removeLegacyOptionHotkeys() {
-        guard !Defaults[.didRemoveLegacyOptionHotkeys] else { return }
-        Defaults[.didRemoveLegacyOptionHotkeys] = true
-        // (key, carbonKeyCode, carbonModifiers) — 2048 = Carbon optionKey
-        let legacy: [(String, Int)] = [
-            ("KeyboardShortcuts_deleteItem", 51),   // ⌥⌫
-            ("KeyboardShortcuts_pinItem", 35),      // ⌥P
-            ("KeyboardShortcuts_bookmarkItem", 11), // ⌥B
-        ]
+    /// Pin / bookmark / delete used to be global Carbon hotkeys. Clear any
+    /// leftover UserDefaults so they can't keep consuming keystrokes.
+    private func removeRetiredItemHotkeys() {
         let ud = UserDefaults.standard
-        for (key, keyCode) in legacy {
-            guard let raw = ud.string(forKey: key),
-                  let data = raw.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  obj["carbonKeyCode"] as? Int == keyCode,
-                  obj["carbonModifiers"] as? Int == 2048 else { continue }
+        for key in [
+            "KeyboardShortcuts_deleteItem",
+            "KeyboardShortcuts_pinItem",
+            "KeyboardShortcuts_bookmarkItem",
+        ] where ud.object(forKey: key) != nil {
             ud.removeObject(forKey: key)
-            print("[Hotkeys] removed legacy global hotkey \(key) (was eating an Option combo)")
         }
     }
 
@@ -111,24 +99,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         KeyboardShortcuts.onKeyUp(for: .openClipword) { [weak self] in
             Task { @MainActor in
                 self?.appState?.toggleWindow()
-            }
-        }
-        KeyboardShortcuts.onKeyUp(for: .pinItem) { [weak self] in
-            Task { @MainActor in
-                guard WindowManager.shared.isVisible else { return }
-                self?.appState?.togglePinSelected()
-            }
-        }
-        KeyboardShortcuts.onKeyUp(for: .bookmarkItem) { [weak self] in
-            Task { @MainActor in
-                guard WindowManager.shared.isVisible else { return }
-                self?.appState?.toggleBookmarkSelected()
-            }
-        }
-        KeyboardShortcuts.onKeyUp(for: .deleteItem) { [weak self] in
-            Task { @MainActor in
-                guard WindowManager.shared.isVisible else { return }
-                self?.appState?.deleteSelected()
             }
         }
     }

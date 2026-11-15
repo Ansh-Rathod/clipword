@@ -4,12 +4,6 @@ import SwiftUI
 
 extension KeyboardShortcuts.Name {
     static let openClipword = Self("openClipword", default: .init(.c, modifiers: [.command, .shift]))
-    // ⚠️ No defaults for these: Carbon-registered global hotkeys *consume* the
-    // keystroke system-wide. ⌥⌫ broke "delete word" in every app; ⌥B/⌥P would
-    // break typing ∫/π. Users opt in via the recorders below.
-    static let pinItem = Self("pinItem")
-    static let bookmarkItem = Self("bookmarkItem")
-    static let deleteItem = Self("deleteItem")
 }
 
 struct GeneralSettingsView: View {
@@ -37,15 +31,6 @@ struct GeneralSettingsView: View {
             Section("Shortcuts") {
                 LabeledContent("Open Clipword") {
                     KeyboardShortcuts.Recorder(for: .openClipword)
-                }
-                LabeledContent("Pin item") {
-                    KeyboardShortcuts.Recorder(for: .pinItem)
-                }
-                LabeledContent("Bookmark item") {
-                    KeyboardShortcuts.Recorder(for: .bookmarkItem)
-                }
-                LabeledContent("Delete item") {
-                    KeyboardShortcuts.Recorder(for: .deleteItem)
                 }
             }
             Section("Palette") {

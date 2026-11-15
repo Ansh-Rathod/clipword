@@ -506,7 +506,11 @@ struct MainRootView: View {
 
     private func filterMenuButton(title: String, selected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Label(title, systemImage: selected ? "checkmark" : "")
+            if selected {
+                Label(title, systemImage: "checkmark")
+            } else {
+                Text(title)
+            }
         }
     }
 
