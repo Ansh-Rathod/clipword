@@ -12,6 +12,14 @@ struct StorageSettingsView: View {
     @Default(.sortOrder) private var sortOrder
     @State private var previewCacheSize = LinkPreviewService.cacheSizeDescription
 
+    private var historySizeChoices: [Int] {
+        var choices = HistorySize.presets
+        if historySize > 0, !choices.contains(historySize) {
+            choices.insert(historySize, at: 1)
+        }
+        return choices
+    }
+
     var body: some View {
         Form {
             Section("Content types") {
@@ -33,7 +41,11 @@ struct StorageSettingsView: View {
                 }
             }
             Section("History") {
-                Stepper("History size: \(historySize)", value: $historySize, in: 1...999)
+                Picker("History size", selection: $historySize) {
+                    ForEach(historySizeChoices, id: \.self) { size in
+                        Text(HistorySize.label(size)).tag(size)
+                    }
+                }
                 Picker("Keep history for", selection: $historyRetention) {
                     ForEach(HistoryRetention.allCases) { retention in
                         Text(retention.label).tag(retention)
@@ -45,6 +57,9 @@ struct StorageSettingsView: View {
                     }
                 }
                 LabeledContent("Database size", value: historyStore.databaseSize)
+                Text("History is stored on this Mac at ~/Library/Application Support/Clipword. Deleting the app does not delete it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -54,6 +69,10 @@ struct StorageSettingsView: View {
         }
         .onChange(of: historyRetention) { _, _ in
             historyStore.pruneByRetention()
+            historyStore.reload()
+        }
+        .onChange(of: historySize) { _, _ in
+            historyStore.prune()
             historyStore.reload()
         }
     }

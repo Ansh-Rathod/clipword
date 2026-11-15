@@ -47,6 +47,10 @@ private struct GlobalJumpTokenKey: EnvironmentKey {
     static let defaultValue = 0
 }
 
+private struct ListRevealTokenKey: EnvironmentKey {
+    static let defaultValue = 0
+}
+
 private struct GlobalJumpDirectionKey: EnvironmentKey {
     static let defaultValue = SpatialDirection.down
 }
@@ -93,6 +97,13 @@ extension EnvironmentValues {
     var globalJumpDirection: SpatialDirection {
         get { self[GlobalJumpDirectionKey.self] }
         set { self[GlobalJumpDirectionKey.self] = newValue }
+    }
+
+    /// Bumped on keyboard list movement so AppKit can scroll the selection
+    /// into view without also jumping when the mouse clicks or the panel reopens.
+    var listRevealToken: Int {
+        get { self[ListRevealTokenKey.self] }
+        set { self[ListRevealTokenKey.self] = newValue }
     }
 }
 
@@ -444,6 +455,161 @@ enum ScrollOffsetSupport {
 
 }
 
+/// Scrolls a selected list row into view via AppKit. `ScrollViewReader` often
+/// no-ops on the `NSTableView` behind a SwiftUI `List`.
+private struct KeepSelectedRowVisibleHost: View {
+    var selected: Bool
+    @Environment(\.listRevealToken) private var token
+
+    var body: some View {
+        KeepSelectedRowVisible(selected: selected, token: token)
+    }
+}
+
+private struct KeepSelectedRowVisible: NSViewRepresentable {
+    var selected: Bool
+    var token: Int
+
+    func makeNSView(context: Context) -> KeepSelectedRowVisibleView {
+        let view = KeepSelectedRowVisibleView()
+        view.selected = selected
+        view.lastToken = token
+        return view
+    }
+
+    func updateNSView(_ nsView: KeepSelectedRowVisibleView, context: Context) {
+        nsView.selected = selected
+        let shouldReveal = selected && token != 0 && token != nsView.lastToken
+        nsView.lastToken = token
+        if shouldReveal {
+            nsView.scheduleReveal()
+        }
+    }
+}
+
+final class KeepSelectedRowVisibleView: NSView {
+    var selected = false
+    var lastToken = 0
+    private var attempts = 0
+
+    func scheduleReveal() {
+        attempts = 0
+        reveal()
+    }
+
+    private func reveal() {
+        guard selected else { return }
+        if scrollIntoView() { return }
+        attempts += 1
+        guard attempts < 8 else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.reveal()
+        }
+    }
+
+    @discardableResult
+    private func scrollIntoView() -> Bool {
+        guard selected, window != nil else { return false }
+        if let table = enclosingTableView() {
+            let row = table.row(for: self)
+            if row >= 0 {
+                if row > 0 { table.scrollRowToVisible(row - 1) }
+                table.scrollRowToVisible(row)
+                return true
+            }
+        }
+        if enclosingScrollView != nil {
+            scrollToVisible(bounds.insetBy(dx: 0, dy: -6))
+            return true
+        }
+        return false
+    }
+
+    private func enclosingTableView() -> NSTableView? {
+        var node: NSView? = self
+        while let view = node {
+            if let table = view as? NSTableView { return table }
+            node = view.superview
+        }
+        return nil
+    }
+}
+
+/// List-level fallback for jumps to rows that aren't materialized yet.
+private struct ListTableScrollerHost: View {
+    var row: Int?
+    @Environment(\.listRevealToken) private var token
+
+    var body: some View {
+        ListTableScroller(row: row, token: token)
+    }
+}
+
+private struct ListTableScroller: NSViewRepresentable {
+    var row: Int?
+    var token: Int
+
+    func makeNSView(context: Context) -> ListTableScrollerView {
+        let view = ListTableScrollerView()
+        view.row = row
+        view.lastToken = token
+        return view
+    }
+
+    func updateNSView(_ nsView: ListTableScrollerView, context: Context) {
+        nsView.row = row
+        let shouldScroll = token != 0 && token != nsView.lastToken
+        nsView.lastToken = token
+        if shouldScroll {
+            nsView.scheduleScroll()
+        }
+    }
+}
+
+final class ListTableScrollerView: NSView {
+    var row: Int?
+    var lastToken = 0
+    private var attempts = 0
+
+    func scheduleScroll() {
+        attempts = 0
+        scroll()
+    }
+
+    private func scroll() {
+        guard let row else { return }
+        if let table = nearestTable(), row >= 0, row < table.numberOfRows {
+            if row > 0 { table.scrollRowToVisible(row - 1) }
+            table.scrollRowToVisible(row)
+            return
+        }
+        attempts += 1
+        guard attempts < 8 else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.scroll()
+        }
+    }
+
+    private func nearestTable() -> NSTableView? {
+        var node: NSView? = self
+        var depth = 0
+        while let view = node, depth < 10 {
+            if let table = firstTable(in: view) { return table }
+            node = view.superview
+            depth += 1
+        }
+        return nil
+    }
+
+    private func firstTable(in view: NSView) -> NSTableView? {
+        if let table = view as? NSTableView { return table }
+        for subview in view.subviews {
+            if let table = firstTable(in: subview) { return table }
+        }
+        return nil
+    }
+}
+
 /// Stops the AppKit table behind a SwiftUI `List` from becoming first responder
 /// on click, which would swallow arrow keys and Delete.
 struct RefuseListFirstResponder: NSViewRepresentable {
@@ -532,9 +698,16 @@ extension View {
         let active = selected && listActive
         return self
             .keyboardMenuAnchor(active)
+            .background {
+                KeepSelectedRowVisibleHost(selected: selected)
+                    .frame(width: 1, height: 1)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
             .focusEffectDisabled()
             .listRowBackground(KeyboardListRowChrome(isSelected: selected, isActive: active))
             .listRowSeparator(.hidden)
+            .pointerStyle(.default)
     }
 
     func persistScrollOffset(store: PaletteScrollStore, key: String, restoreToken: Int) -> some View {
@@ -549,19 +722,24 @@ extension View {
     /// Keeps the row identified by `target` visible whenever it changes.
     ///
     /// `List` doesn't support `.scrollPosition(id:)` — that modifier is
-    /// `ScrollView`-only and is a silent no-op on a `List`. This wraps the list
-    /// in a `ScrollViewReader` and calls `scrollTo`. A nil anchor scrolls the
-    /// minimum amount needed to make the target visible; a non-nil anchor aligns
-    /// the target to that point (e.g. `.top` snaps the target's top to the
-    /// scroll view's top).
-    func scrollToVisible<T: Hashable>(target: T?, anchor: UnitPoint? = nil) -> some View {
+    /// `ScrollView`-only and is a silent no-op on a `List`. SwiftUI's
+    /// `ScrollViewReader.scrollTo` is also unreliable on the AppKit table behind
+    /// a macOS `List`, so this combines it with `NSTableView.scrollRowToVisible`.
+    func scrollToVisible<T: Hashable>(
+        target: T?,
+        tableRow: Int? = nil,
+        anchor: UnitPoint? = nil
+    ) -> some View {
         ScrollViewReader { proxy in
             self
+                .background {
+                    ListTableScrollerHost(row: tableRow)
+                        .frame(width: 0, height: 0)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
                 .onChange(of: target) { _, newValue in
                     guard let newValue else { return }
-                    // Defer so the row's layout exists before we ask the scroll
-                    // view to reveal it; direct calls inside key handling can
-                    // be swallowed before the list updates.
                     DispatchQueue.main.async {
                         proxy.scrollTo(newValue, anchor: anchor)
                     }

@@ -15,10 +15,12 @@ struct MainRootView: View {
     @State private var assignBookmarkItem: BookmarkItem?
     @State private var renameTarget: BookmarkFolder?
     @State private var listScrollTarget: String?
+    @State private var listRevealToken = 0
     @State private var toast: HistoryActionEvent?
     @State private var toastHideTask: Task<Void, Never>?
     @State private var recentlyActedID: UUID?
     @State private var listFocused = false
+    @State private var showingTimeFilter = false
     @FocusState private var searchFieldActive: Bool
     @FocusState private var backButtonFocused: Bool
     @Default(.pasteAutomatically) private var pasteAutomatically
@@ -93,10 +95,44 @@ struct MainRootView: View {
         return sections
     }
 
+    private var historySections: [HistoryDaySection] {
+        let calendar = Calendar.current
+        let extractPins = !historyStore.timeFilter.isActive
+        var pinned: [HistoryItem] = []
+        var buckets: [Date: [HistoryItem]] = [:]
+
+        for item in historyRows {
+            if extractPins && item.isPinned {
+                pinned.append(item)
+                continue
+            }
+            let day = calendar.startOfDay(for: item.lastCopiedAt)
+            buckets[day, default: []].append(item)
+        }
+
+        var sections: [HistoryDaySection] = []
+        if extractPins, Defaults[.pinPosition] == .top, !pinned.isEmpty {
+            sections.append(HistoryDaySection(id: "pinned", title: "Pinned", items: pinned))
+        }
+        for day in buckets.keys.sorted(by: >) {
+            sections.append(
+                HistoryDaySection(
+                    id: "day-\(Int(day.timeIntervalSince1970))",
+                    title: HistoryTimeFilter.sectionTitle(for: day, calendar: calendar),
+                    items: buckets[day] ?? []
+                )
+            )
+        }
+        if extractPins, Defaults[.pinPosition] == .bottom, !pinned.isEmpty {
+            sections.append(HistoryDaySection(id: "pinned", title: "Pinned", items: pinned))
+        }
+        return sections
+    }
+
     private var flattenedRows: [PaletteRow] {
         switch appState.paletteSource {
         case .history:
-            return historyRows.map { .history($0) }
+            return historySections.flatMap { $0.items.map { .history($0) } }
         case .bookmarks:
             return bookmarkSections.flatMap { section -> [PaletteRow] in
                 if let folder = section.folder {
@@ -147,6 +183,7 @@ struct MainRootView: View {
             actionBar
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .environment(\.listRevealToken, listRevealToken)
         .clipwordPanelBackground()
         .sheet(item: $editingHistoryItem) { item in
             EditContentSheet(item: item)
@@ -195,6 +232,18 @@ struct MainRootView: View {
             listFocused = false
             selectFirstRow(preferExisting: false)
             focusSearch()
+        }
+        .onChange(of: historyStore.timeFilter) { _, _ in
+            historyStore.applyFilters(using: searchService)
+            appState.scrollStore.setOffset(.zero, for: PaletteScrollKey.list(.history))
+            listFocused = false
+            selectFirstRow(preferExisting: false)
+            if !showingTimeFilter {
+                focusSearch()
+            }
+        }
+        .onChange(of: showingTimeFilter) { _, visible in
+            if !visible { focusSearch() }
         }
         .onChange(of: appState.paletteSource) { _, source in
             if source == .bookmarks {
@@ -283,6 +332,10 @@ struct MainRootView: View {
                 }
                 .onKeyPress(.return) { handleReturn() }
                 .onKeyPress(.escape) { handleEscape() }
+
+            if appState.paletteSource == .history {
+                timeFilterChip
+            }
 
             combinedFilter
 
@@ -450,6 +503,29 @@ struct MainRootView: View {
         appState.paletteSource = appState.paletteSource == .bookmarks ? .history : .bookmarks
     }
 
+    private var timeFilterChip: some View {
+        Button {
+            showingTimeFilter.toggle()
+        } label: {
+            filterChip(
+                icon: "calendar",
+                title: historyStore.timeFilter.chipTitle,
+                emphasized: historyStore.timeFilter.isActive
+            )
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showingTimeFilter, arrowEdge: .bottom) {
+            TimeFilterPopover(
+                filter: Bindable(historyStore).timeFilter,
+                dateRange: historyStore.selectableDateRange
+            )
+        }
+        .fixedSize()
+        .focusable(false)
+        .pointingHandCursor()
+        .accessibilityLabel("Jump to day")
+    }
+
     private var combinedFilter: some View {
         let hasFilter = historyStore.activeCategory != nil || historyStore.activeAppBundleId != nil
         return Menu {
@@ -612,7 +688,9 @@ struct MainRootView: View {
         case .history:
             return historyStore.items.isEmpty
                 ? "Copy something to get started"
-                : "Try a different filter or search term"
+                : historyStore.timeFilter.isActive
+                    ? "Try a different day or search term"
+                    : "Try a different filter or search term"
         case .bookmarks:
             return historyStore.bookmarks.isEmpty && historyStore.folders.isEmpty
                 ? "Bookmark a clip from Recent, or create a folder"
@@ -625,15 +703,19 @@ struct MainRootView: View {
         switch appState.paletteSource {
         case .history:
             List {
-                ForEach(historyRows) { item in
-                    historyRow(item)
+                ForEach(historySections) { section in
+                    Section(section.title) {
+                        ForEach(section.items) { item in
+                            historyRow(item)
+                        }
+                    }
                 }
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
             .background(.clear)
             .background(RefuseListFirstResponder().frame(width: 0, height: 0))
-            .scrollToVisible(target: listScrollTarget)
+            .scrollToVisible(target: listScrollTarget, tableRow: selectedTableRow)
             .persistScrollOffset(
                 store: appState.scrollStore,
                 key: PaletteScrollKey.list(.history),
@@ -669,7 +751,7 @@ struct MainRootView: View {
             .scrollContentBackground(.hidden)
             .background(.clear)
             .background(RefuseListFirstResponder().frame(width: 0, height: 0))
-            .scrollToVisible(target: listScrollTarget)
+            .scrollToVisible(target: listScrollTarget, tableRow: selectedTableRow)
             .persistScrollOffset(
                 store: appState.scrollStore,
                 key: PaletteScrollKey.list(.bookmarks),
@@ -727,7 +809,7 @@ struct MainRootView: View {
         .keyboardListRow(selected: selected, listActive: listFocused)
         .contentShape(Rectangle())
         .onTapGesture {
-            applySelection(.folder(folder, count: count))
+            applySelection(.folder(folder, count: count), reveal: false)
             listFocused = true
             focusSearch()
         }
@@ -848,7 +930,7 @@ struct MainRootView: View {
             return
         }
         if let first = rows.first {
-            applySelection(first)
+            applySelection(first, reveal: false)
         } else {
             appState.paletteSelection = nil
             historyStore.selectedItemID = nil
@@ -856,7 +938,50 @@ struct MainRootView: View {
         }
     }
 
-    private func applySelection(_ row: PaletteRow) {
+    private var selectedTableRow: Int? {
+        tableRow(for: appState.paletteSelection)
+    }
+
+    private func tableRow(for selection: PaletteSelection?) -> Int? {
+        guard let selection else { return nil }
+        switch appState.paletteSource {
+        case .history:
+            var row = 0
+            for section in historySections {
+                row += 1
+                for item in section.items {
+                    if selection == .history(item.id) { return row }
+                    row += 1
+                }
+            }
+            return nil
+        case .bookmarks:
+            var row = 0
+            for section in bookmarkSections {
+                if let folder = section.folder {
+                    if selection == .folder(folder.id) { return row }
+                    row += 1
+                    guard !isCollapsed(folder) else { continue }
+                    if section.items.isEmpty {
+                        row += 1
+                        continue
+                    }
+                    for item in section.items {
+                        if selection == .bookmark(item.id) { return row }
+                        row += 1
+                    }
+                } else {
+                    for item in section.items {
+                        if selection == .bookmark(item.id) { return row }
+                        row += 1
+                    }
+                }
+            }
+            return nil
+        }
+    }
+
+    private func applySelection(_ row: PaletteRow, reveal: Bool = true) {
         appState.paletteSelection = row.selection
         switch row {
         case .history(let item):
@@ -869,7 +994,14 @@ struct MainRootView: View {
             historyStore.selectedItemID = nil
             historyStore.selectedBookmarkID = nil
         }
+        if reveal {
+            revealSelection(row)
+        }
+    }
+
+    private func revealSelection(_ row: PaletteRow) {
         listScrollTarget = row.id
+        listRevealToken += 1
     }
 
     private func toggleFolder(_ folder: BookmarkFolder) {
@@ -937,7 +1069,7 @@ struct MainRootView: View {
         listFocused = true
         if let current = appState.paletteSelection,
            let match = rows.first(where: { $0.selection == current }) {
-            listScrollTarget = match.id
+            revealSelection(match)
             return
         }
         applySelection(rows[0])
@@ -980,6 +1112,12 @@ struct MainRootView: View {
     private func handleEscape() -> KeyPress.Result {
         if !historyStore.searchQuery.isEmpty {
             historyStore.searchQuery = ""
+            historyStore.applyFilters(using: searchService)
+            selectFirstRow()
+            return .handled
+        }
+        if historyStore.timeFilter.isActive {
+            historyStore.timeFilter = .any
             historyStore.applyFilters(using: searchService)
             selectFirstRow()
             return .handled
@@ -1209,6 +1347,189 @@ private struct PaletteKeycap: View {
             Color.primary.opacity(LiquidGlassMetrics.controlFillOpacity),
             in: RoundedRectangle(cornerRadius: 5, style: .continuous)
         )
+    }
+}
+
+private struct HistoryDaySection: Identifiable {
+    let id: String
+    let title: String
+    let items: [HistoryItem]
+}
+
+private struct TimeFilterPopover: View {
+    @Binding var filter: HistoryTimeFilter
+    let dateRange: ClosedRange<Date>
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var pickedDay = Date()
+    @State private var rangeStart = Date()
+    @State private var rangeEnd = Date()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Jump to a day")
+                .font(.headline)
+
+            presetGrid
+
+            DatePicker(
+                "Day",
+                selection: pickedDayBinding,
+                in: dateRange,
+                displayedComponents: .date
+            )
+            .datePickerStyle(.graphical)
+            .labelsHidden()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Custom range")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 12) {
+                    DatePicker(
+                        "From",
+                        selection: rangeStartBinding,
+                        in: dateRange,
+                        displayedComponents: .date
+                    )
+                    .datePickerStyle(.compact)
+                    DatePicker(
+                        "To",
+                        selection: rangeEndBinding,
+                        in: dateRange,
+                        displayedComponents: .date
+                    )
+                    .datePickerStyle(.compact)
+                }
+            }
+        }
+        .padding(16)
+        .frame(width: 292)
+        .onAppear(perform: syncFromFilter)
+    }
+
+    private var pickedDayBinding: Binding<Date> {
+        Binding(
+            get: { pickedDay },
+            set: { newValue in
+                pickedDay = newValue
+                jumpToDay(newValue)
+            }
+        )
+    }
+
+    private var rangeStartBinding: Binding<Date> {
+        Binding(
+            get: { rangeStart },
+            set: { newValue in
+                rangeStart = newValue
+                applyCustomRange()
+            }
+        )
+    }
+
+    private var rangeEndBinding: Binding<Date> {
+        Binding(
+            get: { rangeEnd },
+            set: { newValue in
+                rangeEnd = newValue
+                applyCustomRange()
+            }
+        )
+    }
+
+    private var presetGrid: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                preset("Any time", selected: !filter.isActive) {
+                    applyPreset(.any)
+                }
+                preset("Today", selected: filter == .today) {
+                    applyPreset(.today)
+                }
+                preset("Yesterday", selected: filter == .yesterday) {
+                    applyPreset(.yesterday)
+                }
+            }
+            HStack(spacing: 8) {
+                preset("Last 7 days", selected: filter == .last7Days) {
+                    applyPreset(.last7Days)
+                }
+                preset("This month", selected: filter == .thisMonth) {
+                    applyPreset(.thisMonth)
+                }
+            }
+        }
+    }
+
+    private func preset(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity)
+                .background(
+                    selected ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.08),
+                    in: Capsule()
+                )
+                .foregroundStyle(selected ? Color.accentColor : Color.primary)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func applyPreset(_ next: HistoryTimeFilter) {
+        filter = next
+        dismiss()
+    }
+
+    private func jumpToDay(_ date: Date) {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) {
+            filter = .today
+        } else if calendar.isDateInYesterday(date) {
+            filter = .yesterday
+        } else {
+            filter = HistoryTimeFilter.spanning(date, to: date)
+        }
+        dismiss()
+    }
+
+    private func applyCustomRange() {
+        filter = HistoryTimeFilter.spanning(rangeStart, to: rangeEnd)
+    }
+
+    private func syncFromFilter() {
+        let calendar = Calendar.current
+        let now = Date()
+        switch filter {
+        case .any, .today, .last7Days, .thisMonth:
+            pickedDay = now
+            rangeEnd = calendar.startOfDay(for: now)
+            if case .last7Days = filter {
+                rangeStart = calendar.date(byAdding: .day, value: -6, to: rangeEnd) ?? rangeEnd
+            } else if case .thisMonth = filter {
+                rangeStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now)) ?? rangeEnd
+            } else {
+                rangeStart = rangeEnd
+            }
+        case .yesterday:
+            let yesterday = calendar.date(byAdding: .day, value: -1, to: now) ?? now
+            pickedDay = yesterday
+            rangeStart = calendar.startOfDay(for: yesterday)
+            rangeEnd = rangeStart
+        case .days(let from, let to):
+            pickedDay = to
+            rangeStart = calendar.startOfDay(for: from)
+            rangeEnd = calendar.startOfDay(for: to)
+        }
+        rangeStart = clamped(rangeStart)
+        rangeEnd = clamped(rangeEnd)
+        pickedDay = clamped(pickedDay)
+    }
+
+    private func clamped(_ date: Date) -> Date {
+        min(max(date, dateRange.lowerBound), dateRange.upperBound)
     }
 }
 

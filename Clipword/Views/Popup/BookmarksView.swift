@@ -32,6 +32,7 @@ struct BookmarksView: View {
     @State private var editingItem: BookmarkItem?
     @State private var forceSearch = false
     @State private var listScrollTarget: UUID?
+    @State private var listRevealToken = 0
     @State private var isNamingFolder = false
     @State private var folderNameDraft = ""
     @State private var renameTarget: BookmarkFolder?
@@ -175,6 +176,7 @@ struct BookmarksView: View {
                 }
             }
         }
+        .environment(\.listRevealToken, listRevealToken)
         .clipwordPanelBackground()
         .sheet(item: $editingItem) { item in
             EditBookmarkSheet(item: item)
@@ -362,7 +364,7 @@ struct BookmarksView: View {
         .scrollContentBackground(.hidden)
         .background(.clear)
         .arrowListFocus($focus, equals: .list)
-        .scrollToVisible(target: listScrollTarget)
+        .scrollToVisible(target: listScrollTarget, tableRow: selectedTableRow)
         .onDeleteCommand { deleteSelectedItem() }
     }
 
@@ -398,7 +400,7 @@ struct BookmarksView: View {
             if !navigableBookmarks.isEmpty {
                 historyStore.selectedBookmarkID = navigableBookmarks.first?.id
                 focus = .list
-                listScrollTarget = historyStore.selectedBookmarkID
+                revealSelectedBookmark()
             } else {
                 focus = toolbar.first
             }
@@ -481,7 +483,31 @@ struct BookmarksView: View {
         } else if let index {
             historyStore.selectedBookmarkID = remaining[min(index, remaining.count - 1)].id
         }
+        revealSelectedBookmark()
+    }
+
+    private var selectedTableRow: Int? {
+        guard let selectedID = historyStore.selectedBookmarkID else { return nil }
+        var row = 0
+        for section in listSections {
+            row += 1
+            let collapsed = section.folder.map { collapsedFolderIDs.contains($0.id) } ?? false
+            if collapsed { continue }
+            if section.items.isEmpty {
+                row += 1
+                continue
+            }
+            for item in section.items {
+                if item.id == selectedID { return row }
+                row += 1
+            }
+        }
+        return nil
+    }
+
+    private func revealSelectedBookmark() {
         listScrollTarget = historyStore.selectedBookmarkID
+        listRevealToken += 1
     }
 
     private func handleListJump(_ direction: SpatialDirection) -> KeyPress.Result {
@@ -489,7 +515,7 @@ struct BookmarksView: View {
         guard let target = direction == .up ? items.first : items.last else { return .handled }
         historyStore.selectedBookmarkID = target.id
         focus = .list
-        listScrollTarget = target.id
+        revealSelectedBookmark()
         return .handled
     }
 
@@ -503,12 +529,12 @@ struct BookmarksView: View {
                 focus = focusRows.first?.first ?? .typeFilter
             } else {
                 historyStore.selectedBookmarkID = items[index - 1].id
-                listScrollTarget = historyStore.selectedBookmarkID
+                revealSelectedBookmark()
             }
         } else {
             let next = min(items.count - 1, index + 1)
             historyStore.selectedBookmarkID = items[next].id
-            listScrollTarget = historyStore.selectedBookmarkID
+            revealSelectedBookmark()
         }
         return .handled
     }

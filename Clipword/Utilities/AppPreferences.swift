@@ -37,6 +37,32 @@ enum SortOrder: String, CaseIterable, Defaults.Serializable, Identifiable {
     }
 }
 
+/// Count cap for unpinned history. `0` means keep every item.
+enum HistorySize {
+    static let unlimited = 0
+    static let presets = [unlimited, 100, 200, 500, 1000]
+
+    static func isUnlimited(_ value: Int) -> Bool { value <= 0 }
+
+    static func label(_ value: Int) -> String {
+        isUnlimited(value) ? "Unlimited" : "\(value)"
+    }
+}
+
+/// On-disk home for history, bookmarks, and caches. Uses the real user
+/// Application Support folder (not the app bundle / sandbox container) so
+/// deleting Clipword does not delete clipboard history.
+enum AppSupport {
+    static var directory: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Clipword", isDirectory: true)
+    }
+
+    static var storeURL: URL {
+        directory.appendingPathComponent("Storage.sqlite")
+    }
+}
+
 /// How long history is kept before unpinned entries are pruned.
 enum HistoryRetention: String, CaseIterable, Defaults.Serializable, Identifiable {
     case day, week, month, threeMonths, sixMonths, year, unlimited
@@ -100,7 +126,8 @@ extension Defaults.Keys {
     static let saveFiles = Key<Bool>("saveFiles", default: true)
     /// Fetch Open Graph title/thumbnail when viewing a copied link.
     static let loadLinkPreviews = Key<Bool>("loadLinkPreviews", default: true)
-    static let historySize = Key<Int>("historySize", default: 200)
+    /// `0` is unlimited (keep every item). Positive values cap unpinned history.
+    static let historySize = Key<Int>("historySize", default: HistorySize.unlimited)
     static let historyRetention = Key<HistoryRetention>("historyRetention", default: .unlimited)
     static let sortOrder = Key<SortOrder>("sortOrder", default: .lastCopied)
     /// Bundle IDs seeded into `ignoredApps` on fresh installs (and, once, via

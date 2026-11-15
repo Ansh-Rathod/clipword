@@ -24,6 +24,7 @@ final class HistoryStore {
     var pasteStack: [HistoryItem] = []
     var activeCategory: ClipboardCategory?
     var activeAppBundleId: String?
+    var timeFilter: HistoryTimeFilter = .any
 
     private(set) var lastAction: HistoryActionEvent?
     private var actionToken = 0
@@ -55,10 +56,18 @@ final class HistoryStore {
     func reload() {
         let sort = sortDescriptor()
         var descriptor = FetchDescriptor<HistoryItem>(sortBy: [sort])
-        descriptor.fetchLimit = Defaults[.historySize] + 50
+        if let cap = itemCap {
+            descriptor.fetchLimit = cap
+        }
         items = (try? modelContext.fetch(descriptor)) ?? []
         scheduleCategoryBackfill()
         applyFilters()
+    }
+
+    /// `nil` means keep every unpinned item (Settings → History size: Unlimited).
+    private var itemCap: Int? {
+        let size = Defaults[.historySize]
+        return HistorySize.isUnlimited(size) ? nil : size
     }
 
     /// Deletes every unpinned item older than the retention cutoff (see
@@ -184,6 +193,10 @@ final class HistoryStore {
             result = result.filter { $0.applicationBundleId == activeAppBundleId }
         }
 
+        if timeFilter.isActive {
+            result = result.filter { timeFilter.contains($0.lastCopiedAt) }
+        }
+
         if !searchQuery.isEmpty {
             if let searchService {
                 result = searchService.search(query: searchQuery, in: result)
@@ -206,6 +219,18 @@ final class HistoryStore {
     func setAppFilter(_ bundleId: String?) {
         activeAppBundleId = bundleId
         applyFilters()
+    }
+
+    func setTimeFilter(_ filter: HistoryTimeFilter) {
+        timeFilter = filter
+        applyFilters()
+    }
+
+    /// Bounds the jump-to-day calendar to history that actually exists.
+    var selectableDateRange: ClosedRange<Date> {
+        let end = Date()
+        let start = items.map(\.lastCopiedAt).min() ?? Calendar.current.date(byAdding: .month, value: -1, to: end) ?? end
+        return min(start, end)...max(start, end)
     }
 
     func count(for category: ClipboardCategory) -> Int {
@@ -330,11 +355,12 @@ final class HistoryStore {
         }
     }
 
-    /// Removes items beyond the history-size cap. Returns what was deleted so
-    /// callers can drop them from the in-memory list without a full re-fetch.
+    /// Removes items beyond the history-size cap. No-op when size is unlimited.
+    /// Returns what was deleted so callers can drop them from the in-memory list
+    /// without a full re-fetch.
     @discardableResult
     func prune() -> [HistoryItem] {
-        let limit = Defaults[.historySize]
+        guard let limit = itemCap else { return [] }
         let removable = items
             .filter { !$0.isPinned }
             .sorted { $0.lastCopiedAt > $1.lastCopiedAt }
@@ -666,10 +692,16 @@ final class HistoryStore {
     }
 
     var databaseSize: String {
-        let url = modelContext.container.configurations.first?.url
-        guard let url, let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = attrs[.size] as? Int64 else { return "—" }
-        return ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+        let url = AppSupport.storeURL
+        var bytes: Int64 = 0
+        for suffix in ["", "-wal", "-shm"] {
+            let path = url.path + suffix
+            if let size = try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64 {
+                bytes += size
+            }
+        }
+        guard bytes > 0 else { return "—" }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 }
 

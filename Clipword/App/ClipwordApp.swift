@@ -44,11 +44,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             BookmarkItem.self,
             BookmarkFolder.self,
         ])
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("Clipword", isDirectory: true)
+        let url = AppSupport.directory
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        let storeURL = url.appendingPathComponent("Storage.sqlite")
-        let config = ModelConfiguration(url: storeURL)
+        let config = ModelConfiguration(url: AppSupport.storeURL)
         let container = try! ModelContainer(for: schema, configurations: config)
         modelContainer = container
 

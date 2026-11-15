@@ -340,9 +340,7 @@ actor LinkPreviewService {
     }
 
     nonisolated static var directory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("Clipword", isDirectory: true)
-            .appendingPathComponent("LinkPreviews", isDirectory: true)
+        AppSupport.directory.appendingPathComponent("LinkPreviews", isDirectory: true)
     }
 
     private struct DiskRecord: Codable, Sendable {

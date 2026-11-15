@@ -44,7 +44,7 @@ xcodebuild -project Clipword.xcodeproj -scheme Clipword -configuration Debug bui
 - History: `~/Library/Application Support/Clipword/Storage.sqlite`
 - Preferences: `~/Library/Preferences/com.clipword.app.plist`
 
-History stays on your Mac. Viewing a copied link can fetch its title and thumbnail (cached locally); this can be turned off in Settings → Storage.
+History stays on this Mac and is not deleted when you remove the app. Viewing a copied link can fetch its title and thumbnail (cached locally); this can be turned off in Settings → Storage.
 
 ## Permissions
 
