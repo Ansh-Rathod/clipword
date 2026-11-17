@@ -1,34 +1,31 @@
 # Clipword
 
-Native macOS clipboard manager. Built with SwiftUI (macOS 15+), SwiftData, and local-only storage.
+macOS clipboard manager. Flutter UI with a native SwiftData host. History stays local on this Mac.
 
 ## Features
 
 - Menu bar clipboard history (⇧⌘C default hotkey)
-- Search (exact, fuzzy, regex, mixed)
-- Pin, bookmark, delete, and clear history
+- Search, pin, bookmark, delete
 - Auto-paste with Accessibility permission
-- Paste stack for sequential pasting
-- Image OCR via Vision framework
+- Paste stack, image OCR, link previews
 - Settings for general, storage, ignore rules, and advanced options
 
 ## Requirements
 
 - macOS 15 (Sequoia) or later
-- Xcode 16+
+- Flutter (stable) with macOS desktop enabled
 
 ## Build
 
 ```bash
-cd clipword
-python3 generate_project.py
-open Clipword.xcodeproj
+cd flutter
+flutter run -d macos
 ```
 
-Or from the command line:
+Or:
 
 ```bash
-xcodebuild -project Clipword.xcodeproj -scheme Clipword -configuration Debug build
+./run.sh
 ```
 
 ## Usage
@@ -37,7 +34,7 @@ xcodebuild -project Clipword.xcodeproj -scheme Clipword -configuration Debug bui
 2. Copy text/images/files; history is saved automatically
 3. Press **⇧⌘C** or click the menu bar icon
 4. Search, select with Enter to paste
-5. Configure preferences via **Clipword → Settings** (⌘,)
+5. Open Settings with **⌘,**
 
 ## Data storage
 

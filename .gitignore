@@ -1,8 +1,9 @@
-# xcodebuild derived data (run.sh and local builds)
+# Flutter / Xcode build output
 .build/
 .derivedData/
 DerivedData/
 build/
+flutter/build/
 
 # temp
 temp/

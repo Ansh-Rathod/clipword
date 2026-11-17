@@ -1,0 +1,3 @@
+PRODUCT_NAME = Clipword Flutter
+PRODUCT_BUNDLE_IDENTIFIER = com.clipword.flutter
+PRODUCT_COPYRIGHT = Copyright © 2026 Clipword. All rights reserved.

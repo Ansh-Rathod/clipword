@@ -1,0 +1,22 @@
+PODS:
+  - cupertino_native_better (0.0.1):
+    - FlutterMacOS
+  - FlutterMacOS (1.0.0)
+
+DEPENDENCIES:
+  - cupertino_native_better (from `Flutter/ephemeral/.symlinks/plugins/cupertino_native_better/macos`)
+  - FlutterMacOS (from `Flutter/ephemeral`)
+
+EXTERNAL SOURCES:
+  cupertino_native_better:
+    :path: Flutter/ephemeral/.symlinks/plugins/cupertino_native_better/macos
+  FlutterMacOS:
+    :path: Flutter/ephemeral
+
+SPEC CHECKSUMS:
+  cupertino_native_better: e8ceb1cb5f3ceaca023ec38b6fec3bab84ab90cb
+  FlutterMacOS: c232990155153907050900a2e175c7773903ba4e
+
+PODFILE CHECKSUM: 1e95c36afbfd1cb6423ceca4de7a8e1b256fb6ac
+
+COCOAPODS: 1.16.2
