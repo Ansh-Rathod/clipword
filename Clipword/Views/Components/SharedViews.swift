@@ -152,6 +152,9 @@ struct KeyboardListRowChrome: View {
     let isActive: Bool
 
     var body: some View {
+        #if DEBUG
+        if isSelected { let _ = DebugTools.clickMark("chrome-eval") }
+        #endif
         RoundedRectangle(cornerRadius: 6, style: .continuous)
             .fill(fillColor)
             .padding(.horizontal, 8)
@@ -398,45 +401,58 @@ final class PersistentScrollProbe: NSView {
         coordinator?.attach(nearestScrollView())
     }
 
-    /// `enclosingScrollView` is nil when this probe is a List background
-    /// sibling of the table scroller. Prefer the table's scroller so we don't
-    /// latch onto the preview pane.
+    /// `enclosingScrollView` is nil when this probe is a `.background` sibling
+    /// of the scroll view it wraps. The wrapped scroll view covers the same
+    /// frame as the probe, so among candidate scroll views gathered by subtree
+    /// proximity we pick the one whose frame contains the probe's position.
+    /// Hunting for any table/scroll view in shared ancestors used to latch the
+    /// detail pane's probes onto the history list's scroll view — snapping the
+    /// list back to top on every selection change.
     func nearestScrollView() -> NSScrollView? {
         if let scroll = enclosingScrollView { return scroll }
+        var candidates: [NSScrollView] = []
         var node: NSView? = self
         var depth = 0
-        while let view = node, depth < 8 {
-            if let table = Self.firstTable(in: view) {
-                return table.enclosingScrollView
+        while let view = node, depth < 10 {
+            guard let parent = view.superview else { break }
+            let siblings = parent.subviews
+            if let index = siblings.firstIndex(of: view) {
+                var distance = 1
+                while index - distance >= 0 || index + distance < siblings.count {
+                    if index - distance >= 0 {
+                        Self.collectScrollViews(in: siblings[index - distance], into: &candidates)
+                    }
+                    if index + distance < siblings.count {
+                        Self.collectScrollViews(in: siblings[index + distance], into: &candidates)
+                    }
+                    distance += 1
+                }
             }
-            if let scroll = view as? NSScrollView { return scroll }
-            node = view.superview
+            node = parent
             depth += 1
         }
-        node = self
-        depth = 0
-        while let view = node, depth < 6 {
-            if let scroll = Self.firstScrollView(in: view) { return scroll }
-            node = view.superview
-            depth += 1
+        let probeCenter = NSPoint(
+            x: convert(bounds, to: nil).midX,
+            y: convert(bounds, to: nil).midY
+        )
+        for scroll in candidates {
+            if scroll.convert(scroll.bounds, to: nil).contains(probeCenter) {
+                return scroll
+            }
         }
-        return nil
+        // No overlap (unusual layout): the closest candidate still beats the
+        // old sideways table hunt, which could reach into a different pane.
+        return candidates.first
     }
 
-    private static func firstTable(in view: NSView) -> NSTableView? {
-        if let table = view as? NSTableView { return table }
-        for subview in view.subviews {
-            if let table = firstTable(in: subview) { return table }
+    private static func collectScrollViews(in view: NSView, into result: inout [NSScrollView]) {
+        if let scroll = view as? NSScrollView {
+            result.append(scroll)
+            return
         }
-        return nil
-    }
-
-    private static func firstScrollView(in view: NSView) -> NSScrollView? {
-        if let scroll = view as? NSScrollView { return scroll }
         for subview in view.subviews {
-            if let scroll = firstScrollView(in: subview) { return scroll }
+            collectScrollViews(in: subview, into: &result)
         }
-        return nil
     }
 }
 
@@ -471,6 +487,9 @@ private struct KeepSelectedRowVisible: NSViewRepresentable {
     var token: Int
 
     func makeNSView(context: Context) -> KeepSelectedRowVisibleView {
+        #if DEBUG
+        if selected { DebugTools.clickMark("row-mounted") }
+        #endif
         let view = KeepSelectedRowVisibleView()
         view.selected = selected
         view.lastToken = token
@@ -610,6 +629,122 @@ final class ListTableScrollerView: NSView {
     }
 }
 
+/// Provides right-click menus for the `NSTableView` behind a SwiftUI `List`,
+/// replacing per-row `.contextMenu` modifiers. SwiftUI evaluates a
+/// `.contextMenu` builder for *every row on every body pass* — at 1,500+ rows
+/// that is the single largest main-thread cost per keypress — and it resets
+/// `tableView.menu` during reconciliation, so the menu can't ride on the
+/// property. A local `.rightMouseDown` monitor pops a lazily-built `NSMenu`
+/// (the same kind `KeyboardContextMenu` pops for ⌘K) exactly where clicked.
+struct TableContextMenuInstaller: NSViewRepresentable {
+    /// Map a clicked table row (section headers included) to a menu; nil = none.
+    var menu: (Int) -> NSMenu?
+    /// Left-click on a table row; return true to consume the event. Handles
+    /// single *and* double clicks natively — clickCount 1 fires immediately,
+    /// so clicks don't wait for SwiftUI's double-tap disambiguation, and the
+    /// table hit-tests rows so gestures/contentShape aren't needed per row.
+    var click: ((Int, Int) -> Bool)?
+
+    func makeNSView(context: Context) -> TableContextMenuView {
+        TableContextMenuView()
+    }
+
+    func updateNSView(_ nsView: TableContextMenuView, context: Context) {
+        nsView.menuBuilder = menu
+        nsView.clickHandler = click
+        nsView.install()
+    }
+}
+
+@MainActor
+final class TableContextMenuView: NSView {
+    var menuBuilder: ((Int) -> NSMenu?)?
+    var clickHandler: ((Int, Int) -> Bool)?
+    /// The most recently discovered palette table — lets the selection
+    /// registry drive `selectRowIndexes` for instant native row highlight
+    /// while SwiftUI's (deferred ~55ms) cell update catches up.
+    static weak var currentTable: NSTableView?
+    private var monitor: Any?
+    private var clickMonitor: Any?
+    private weak var tableView: NSTableView?
+
+    deinit {
+        MainActor.assumeIsolated {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        install()
+    }
+
+    override func layout() {
+        super.layout()
+        install()
+    }
+
+    func install() {
+        tableView = tableView ?? nearestTable()
+        Self.currentTable = tableView
+        guard monitor == nil, tableView != nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] event in
+            self?.handleRightClick(event) ?? event
+        }
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            self?.handleLeftClick(event) ?? event
+        }
+        #if DEBUG
+        if DebugTools.navTestActive {
+            DebugTools.navLog("[menu] monitor installed on table=\(ObjectIdentifier(tableView!).hashValue)")
+        }
+        #endif
+    }
+
+    private func handleRightClick(_ event: NSEvent) -> NSEvent? {
+        tableView = tableView ?? nearestTable()
+        guard let table = tableView, event.window === table.window else { return event }
+        let point = table.convert(event.locationInWindow, from: nil)
+        guard table.bounds.contains(point) else { return event }
+        let row = table.row(at: point)
+        guard row >= 0, let menu = menuBuilder?(row) else { return event }
+        NSMenu.popUpContextMenu(menu, with: event, for: table)
+        return nil
+    }
+
+    private func handleLeftClick(_ event: NSEvent) -> NSEvent? {
+        tableView = tableView ?? nearestTable()
+        guard let table = tableView, event.window === table.window else { return event }
+        let point = table.convert(event.locationInWindow, from: nil)
+        guard table.bounds.contains(point) else { return event }
+        let row = table.row(at: point)
+        guard row >= 0, let handler = clickHandler, handler(row, event.clickCount) else {
+            return event
+        }
+        return nil
+    }
+
+    private func nearestTable() -> NSTableView? {
+        var node: NSView? = self
+        var depth = 0
+        while let view = node, depth < 10 {
+            if let table = Self.firstTable(in: view) { return table }
+            node = view.superview
+            depth += 1
+        }
+        return nil
+    }
+
+    private static func firstTable(in view: NSView) -> NSTableView? {
+        if let table = view as? NSTableView { return table }
+        for subview in view.subviews {
+            if let table = firstTable(in: subview) { return table }
+        }
+        return nil
+    }
+}
+
 /// Stops the AppKit table behind a SwiftUI `List` from becoming first responder
 /// on click, which would swallow arrow keys and Delete.
 struct RefuseListFirstResponder: NSViewRepresentable {
@@ -697,17 +832,25 @@ extension View {
     func keyboardListRow(selected: Bool, listActive: Bool) -> some View {
         let active = selected && listActive
         return self
-            .keyboardMenuAnchor(active)
+            // These AppKit probes only serve the one selected/active row — one
+            // shared .background keeps the per-row modifier count low since
+            // every row pays its construction cost on each palette rebuild.
             .background {
-                KeepSelectedRowVisibleHost(selected: selected)
-                    .frame(width: 1, height: 1)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+                if active {
+                    ArrowFocusAnchorProbe(active: true)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .allowsHitTesting(false)
+                }
+                if selected {
+                    KeepSelectedRowVisibleHost(selected: true)
+                        .frame(width: 1, height: 1)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
             }
             .focusEffectDisabled()
             .listRowBackground(KeyboardListRowChrome(isSelected: selected, isActive: active))
             .listRowSeparator(.hidden)
-            .pointerStyle(.default)
     }
 
     func persistScrollOffset(store: PaletteScrollStore, key: String, restoreToken: Int) -> some View {
@@ -718,7 +861,9 @@ extension View {
                 .accessibilityHidden(true)
         }
     }
+}
 
+extension View {
     /// Keeps the row identified by `target` visible whenever it changes.
     ///
     /// `List` doesn't support `.scrollPosition(id:)` — that modifier is
@@ -1001,7 +1146,39 @@ enum KeyboardContextMenu {
         delete: @escaping () -> Void,
         relativeTo view: NSView? = nil
     ) {
-        pop(buildMenu { add, separator, submenu in
+        pop(historyMenu(
+            copy: copy,
+            paste: paste,
+            addToStack: addToStack,
+            edit: edit,
+            toggleBookmark: toggleBookmark,
+            bookmarkTitle: bookmarkTitle,
+            folders: folders,
+            currentFolderID: currentFolderID,
+            addToFolder: addToFolder,
+            addToNewFolder: addToNewFolder,
+            togglePin: togglePin,
+            pinTitle: pinTitle,
+            delete: delete
+        ), relativeTo: view)
+    }
+
+    static func historyMenu(
+        copy: @escaping () -> Void,
+        paste: @escaping () -> Void,
+        addToStack: @escaping () -> Void,
+        edit: @escaping () -> Void,
+        toggleBookmark: @escaping () -> Void,
+        bookmarkTitle: String,
+        folders: [(id: UUID, name: String)],
+        currentFolderID: UUID?,
+        addToFolder: @escaping (UUID) -> Void,
+        addToNewFolder: @escaping () -> Void,
+        togglePin: @escaping () -> Void,
+        pinTitle: String,
+        delete: @escaping () -> Void
+    ) -> NSMenu {
+        buildMenu { add, separator, submenu in
             add("Copy", "c", .command, copy)
             add("Paste", "\r", [], paste)
             add("Add to Paste Stack", "v", [.command, .shift], addToStack)
@@ -1024,7 +1201,7 @@ enum KeyboardContextMenu {
             add(pinTitle, "p", .option, togglePin)
             separator()
             add("Delete", "\u{08}", .command, delete)
-        }, relativeTo: view)
+        }
     }
 
     static func popBookmark(
@@ -1038,7 +1215,29 @@ enum KeyboardContextMenu {
         remove: @escaping () -> Void,
         relativeTo view: NSView? = nil
     ) {
-        pop(buildMenu { add, separator, submenu in
+        pop(bookmarkMenu(
+            copy: copy,
+            paste: paste,
+            edit: edit,
+            folders: folders,
+            currentFolderID: currentFolderID,
+            moveToFolder: moveToFolder,
+            moveToNewFolder: moveToNewFolder,
+            remove: remove
+        ), relativeTo: view)
+    }
+
+    static func bookmarkMenu(
+        copy: @escaping () -> Void,
+        paste: @escaping () -> Void,
+        edit: @escaping () -> Void,
+        folders: [(id: UUID, name: String)],
+        currentFolderID: UUID?,
+        moveToFolder: @escaping (UUID?) -> Void,
+        moveToNewFolder: @escaping () -> Void,
+        remove: @escaping () -> Void
+    ) -> NSMenu {
+        buildMenu { add, separator, submenu in
             add("Copy", "c", .command, copy)
             add("Paste", "\r", [], paste)
             separator()
@@ -1055,7 +1254,22 @@ enum KeyboardContextMenu {
                 )
             }
             add("Remove Bookmark", "\u{08}", .command, remove)
-        }, relativeTo: view)
+        }
+    }
+
+    /// Right-click menu for a bookmark folder row (the `popFolderMenu` variant is
+    /// a folder *picker* — this is the folder's own action menu).
+    static func folderMenu(
+        collapsed: Bool,
+        toggle: @escaping () -> Void,
+        rename: @escaping () -> Void,
+        delete: @escaping () -> Void
+    ) -> NSMenu {
+        buildMenu { add, _, _ in
+            add(collapsed ? "Expand" : "Collapse", "", [], toggle)
+            add("Rename…", "", [], rename)
+            add("Delete Folder", "\u{08}", .command, delete)
+        }
     }
 
     static func popFolderMenu(
@@ -1208,7 +1422,7 @@ enum KeyboardContextMenu {
         return menu
     }
 
-    private static func pop(_ menu: NSMenu, relativeTo view: NSView? = nil) {
+    static func pop(_ menu: NSMenu, relativeTo view: NSView? = nil) {
         // Return on a focused control can fire both the control action and the
         // page's onKeyPress handler; ignore a second pop while the first is up.
         let now = ProcessInfo.processInfo.systemUptime
@@ -1615,14 +1829,33 @@ private final class PreviewTextView: NSTextView {
     override var acceptsFirstResponder: Bool { false }
 }
 
+/// `NSWorkspace.icon(forFile:)` is a synchronous icon-service hit (~10–50ms
+/// cold) — the detail pane paid it on every selection change. Icons don't
+/// change while the app runs, so one process-wide cache is enough.
+@MainActor
+final class AppIconCache {
+    static let shared = AppIconCache()
+    /// `nil` value = looked up, app not found (still worth caching).
+    private var cache: [String: NSImage?] = [:]
+
+    func icon(for bundleId: String?) -> NSImage? {
+        guard let bundleId else { return nil }
+        if let cached = cache[bundleId] { return cached }
+        let icon = NSWorkspace.shared
+            .urlForApplication(withBundleIdentifier: bundleId)
+            .map { NSWorkspace.shared.icon(forFile: $0.path) }
+        cache[bundleId] = icon
+        return icon
+    }
+}
+
 struct AppIconView: View {
     let bundleId: String?
     var size: CGFloat = 20
 
     var body: some View {
-        if let bundleId,
-           let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+        if let icon = AppIconCache.shared.icon(for: bundleId) {
+            Image(nsImage: icon)
                 .resizable()
                 .frame(width: size, height: size)
         } else {

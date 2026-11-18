@@ -307,11 +307,7 @@ struct ClipboardDetailPane: View {
     }
 
     private func appName(for bundleId: String?) -> String {
-        guard let bundleId, bundleId != "unknown" else { return "Unknown" }
-        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
-            return FileManager.default.displayName(atPath: url.path)
-        }
-        return bundleId
+        historyStore.appDisplayName(for: bundleId)
     }
 }
 

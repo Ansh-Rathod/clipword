@@ -60,7 +60,14 @@ struct ItemActivityEvent: Identifiable, Hashable {
 @Model
 final class HistoryItem {
     var id: UUID
-    var contentData: Data
+    /// Full payload. `.externalStorage` keeps multi-MB blobs out of the row
+    /// cache — `HistoryStore.reload()` would otherwise materialize every blob
+    /// in the database on launch. Verified to lightweight-migrate existing
+    /// stores (old rows stay inline, new writes go external).
+    @Attribute(.externalStorage) var contentData: Data
+    /// SHA-256 hex of `contentData`. Duplicate detection compares this string
+    /// instead of faulting every stored blob on each copy.
+    var contentHash: String?
     var plainText: String?
     var contentTypeRaw: String
     var contentCategoryRaw: String = ClipboardCategory.plainText.rawValue
@@ -79,7 +86,7 @@ final class HistoryItem {
     var lineCount: Int
     var charCount: Int
     var readingTimeSeconds: Int
-    var imageData: Data?
+    @Attribute(.externalStorage) var imageData: Data?
     var title: String?
 
     @Relationship(deleteRule: .cascade, inverse: \ClipboardEvent.item)
@@ -108,6 +115,7 @@ final class HistoryItem {
     init(
         id: UUID = UUID(),
         contentData: Data = Data(),
+        contentHash: String? = nil,
         plainText: String? = nil,
         contentType: ContentType = .text,
         contentCategory: ClipboardCategory = .plainText,
@@ -131,6 +139,7 @@ final class HistoryItem {
     ) {
         self.id = id
         self.contentData = contentData
+        self.contentHash = contentHash
         self.plainText = plainText
         self.contentTypeRaw = contentType.rawValue
         self.contentCategoryRaw = contentCategory.rawValue
@@ -181,7 +190,11 @@ final class HistoryItem {
     /// Newest-first copy/paste log. Falls back to first/last timestamps for
     /// items that predate per-event tracking.
     var activityTimeline: [ItemActivityEvent] {
+        // `modelContext == nil` means the object was invalidated (deleted +
+        // saved) while this array was still materialized — touching any
+        // persisted property on it fatals, so skip before sorting/mapping.
         let stored = events
+            .filter { $0.modelContext != nil }
             .sorted { $0.occurredAt > $1.occurredAt }
             .map {
                 ItemActivityEvent(

@@ -21,6 +21,17 @@ RELEASE_CONFIG = uid()
 DEBUG_CONFIG_TARGET = uid()
 RELEASE_CONFIG_TARGET = uid()
 
+# Unit-test target. Compiles the app sources + ClipwordTests/*.swift into its
+# own module (types are directly visible, no @testable/host needed), so tests
+# never launch the menu-bar app or touch the real SwiftData store.
+TEST_TARGET_ID = uid()
+TEST_SOURCES_PHASE = uid()
+TEST_FRAMEWORKS_PHASE = uid()
+TEST_PRODUCT_REF = uid()
+CONFIG_LIST_TEST = uid()
+DEBUG_CONFIG_TEST = uid()
+RELEASE_CONFIG_TEST = uid()
+
 # SPM package references
 packages = {
     "Defaults": ("https://github.com/sindresorhus/Defaults", "8.0.0"),
@@ -51,6 +62,27 @@ for sf in swift_files:
     bid = uid()
     file_refs[sf] = (fid, bid)
 
+TEST_SRC = os.path.join(ROOT, "ClipwordTests")
+test_files = []
+if os.path.isdir(TEST_SRC):
+    for dirpath, _, filenames in os.walk(TEST_SRC):
+        for f in filenames:
+            if f.endswith(".swift"):
+                full = os.path.join(dirpath, f)
+                test_files.append(os.path.relpath(full, TEST_SRC))
+test_files.sort()
+
+test_file_refs = {}
+test_build_files = {}
+# App sources go into the test target too (separate PBXBuildFile ids, same
+# PBXFileReference) so no @testable import / TEST_HOST is needed.
+test_app_build_files = {}
+for tf in test_files:
+    test_file_refs[tf] = uid()
+    test_build_files[tf] = uid()
+for sf in swift_files:
+    test_app_build_files[sf] = uid()
+
 resource_files = [
     "Resources/Assets.xcassets",
     "Resources/Info.plist",
@@ -80,6 +112,13 @@ w("\tobjects = {")
 for sf, (fid, bid) in file_refs.items():
     w(f"\t\t{bid} /* {os.path.basename(sf)} in Sources */ = {{isa = PBXBuildFile; fileRef = {fid} /* {os.path.basename(sf)} */; }};")
 
+# PBXBuildFile for the test target: test files + the app sources compiled into
+# the test module.
+for tf, bid in test_build_files.items():
+    w(f"\t\t{bid} /* {os.path.basename(tf)} in Sources */ = {{isa = PBXBuildFile; fileRef = {test_file_refs[tf]} /* {os.path.basename(tf)} */; }};")
+for sf, bid in test_app_build_files.items():
+    w(f"\t\t{bid} /* {os.path.basename(sf)} in Sources */ = {{isa = PBXBuildFile; fileRef = {file_refs[sf][0]} /* {os.path.basename(sf)} */; }};")
+
 for rf, (fid, bid) in res_refs.items():
     name = os.path.basename(rf)
     if name.endswith(".xcassets"):
@@ -94,6 +133,10 @@ for sf, (fid, _) in file_refs.items():
     w(f"\t\t{fid} /* {os.path.basename(sf)} */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = {sf}; sourceTree = \"<group>\"; }};")
 
 w(f"\t\t{PRODUCT_REF} /* Clipword.app */ = {{isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Clipword.app; sourceTree = BUILT_PRODUCTS_DIR; }};")
+w(f"\t\t{TEST_PRODUCT_REF} /* ClipwordTests.xctest */ = {{isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ClipwordTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; }};")
+
+for tf, fid in test_file_refs.items():
+    w(f"\t\t{fid} /* {os.path.basename(tf)} */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = {tf}; sourceTree = \"<group>\"; }};")
 
 for rf, (fid, _) in res_refs.items():
     name = os.path.basename(rf)
@@ -116,8 +159,20 @@ w(f"\t\t{products_group} /* Products */ = {{")
 w("\t\t\tisa = PBXGroup;")
 w("\t\t\tchildren = (")
 w(f"\t\t\t\t{PRODUCT_REF} /* Clipword.app */,")
+w(f"\t\t\t\t{TEST_PRODUCT_REF} /* ClipwordTests.xctest */,")
 w("\t\t\t);")
 w("\t\t\tname = Products;")
+w("\t\t\tsourceTree = \"<group>\";")
+w("\t\t};")
+
+test_group = uid()
+w(f"\t\t{test_group} /* ClipwordTests */ = {{")
+w("\t\t\tisa = PBXGroup;")
+w("\t\t\tchildren = (")
+for tf, fid in test_file_refs.items():
+    w(f"\t\t\t\t{fid} /* {os.path.basename(tf)} */,")
+w("\t\t\t);")
+w("\t\t\tpath = ClipwordTests;")
 w("\t\t\tsourceTree = \"<group>\";")
 w("\t\t};")
 
@@ -137,6 +192,7 @@ w(f"\t\t{main_group} = {{")
 w("\t\t\tisa = PBXGroup;")
 w("\t\t\tchildren = (")
 w(f"\t\t\t\t{clipword_group} /* Clipword */,")
+w(f"\t\t\t\t{test_group} /* ClipwordTests */,")
 w(f"\t\t\t\t{products_group} /* Products */,")
 w("\t\t\t);")
 w("\t\t\tsourceTree = \"<group>\";")
@@ -148,6 +204,23 @@ w("\t\t\tisa = PBXFrameworksBuildPhase;")
 w("\t\t\tbuildActionMask = 2147483647;")
 w("\t\t\tfiles = (")
 for bid in fw_build_ids:
+    w(f"\t\t\t\t{bid} /* Frameworks */,")
+w("\t\t\t);")
+w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
+w("\t\t};")
+
+# The test target compiles app sources so it needs the same SPM products.
+test_fw_ids = []
+for name in packages:
+    bid = uid()
+    test_fw_ids.append(bid)
+    w(f"\t\t{bid} /* {name} in Frameworks */ = {{isa = PBXBuildFile; productRef = {pkg_prod_ids[name]} /* {name} */; }};")
+
+w(f"\t\t{TEST_FRAMEWORKS_PHASE} /* Frameworks */ = {{")
+w("\t\t\tisa = PBXFrameworksBuildPhase;")
+w("\t\t\tbuildActionMask = 2147483647;")
+w("\t\t\tfiles = (")
+for bid in test_fw_ids:
     w(f"\t\t\t\t{bid} /* Frameworks */,")
 w("\t\t\t);")
 w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
@@ -176,6 +249,27 @@ w(f"\t\t\tproductReference = {PRODUCT_REF} /* Clipword.app */;")
 w("\t\t\tproductType = \"com.apple.product-type.application\";")
 w("\t\t};")
 
+w(f"\t\t{TEST_TARGET_ID} /* ClipwordTests */ = {{")
+w("\t\t\tisa = PBXNativeTarget;")
+w(f"\t\t\tbuildConfigurationList = {CONFIG_LIST_TEST} /* Build configuration list for PBXNativeTarget \"ClipwordTests\" */;")
+w("\t\t\tbuildPhases = (")
+w(f"\t\t\t\t{TEST_SOURCES_PHASE} /* Sources */,")
+w(f"\t\t\t\t{TEST_FRAMEWORKS_PHASE} /* Frameworks */,")
+w("\t\t\t);")
+w("\t\t\tbuildRules = (")
+w("\t\t\t);")
+w("\t\t\tdependencies = (")
+w("\t\t\t);")
+w("\t\t\tname = ClipwordTests;")
+w("\t\t\tpackageProductDependencies = (")
+for name in packages:
+    w(f"\t\t\t\t{pkg_prod_ids[name]} /* {name} */,")
+w("\t\t\t);")
+w("\t\t\tproductName = ClipwordTests;")
+w(f"\t\t\tproductReference = {TEST_PRODUCT_REF} /* ClipwordTests.xctest */;")
+w("\t\t\tproductType = \"com.apple.product-type.bundle.unit-test\";")
+w("\t\t};")
+
 # PBXProject
 w(f"\t\t{PROJECT_ID} /* Project object */ = {{")
 w("\t\t\tisa = PBXProject;")
@@ -202,6 +296,7 @@ w("\t\t\tprojectDirPath = \"\";")
 w("\t\t\tprojectRoot = \"\";")
 w("\t\t\ttargets = (")
 w(f"\t\t\t\t{TARGET_ID} /* Clipword */,")
+w(f"\t\t\t\t{TEST_TARGET_ID} /* ClipwordTests */,")
 w("\t\t\t);")
 w("\t\t};")
 
@@ -223,6 +318,18 @@ w("\t\t\tisa = PBXSourcesBuildPhase;")
 w("\t\t\tbuildActionMask = 2147483647;")
 w("\t\t\tfiles = (")
 for sf, (_, bid) in file_refs.items():
+    w(f"\t\t\t\t{bid} /* {os.path.basename(sf)} in Sources */,")
+w("\t\t\t);")
+w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
+w("\t\t};")
+
+w(f"\t\t{TEST_SOURCES_PHASE} /* Sources */ = {{")
+w("\t\t\tisa = PBXSourcesBuildPhase;")
+w("\t\t\tbuildActionMask = 2147483647;")
+w("\t\t\tfiles = (")
+for tf, bid in test_build_files.items():
+    w(f"\t\t\t\t{bid} /* {os.path.basename(tf)} in Sources */,")
+for sf, bid in test_app_build_files.items():
     w(f"\t\t\t\t{bid} /* {os.path.basename(sf)} in Sources */,")
 w("\t\t\t);")
 w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
@@ -253,16 +360,18 @@ for name, prod in product_map.items():
     w("\t\t};")
 
 # Build configurations
-for cid, name, is_proj in [
-    (DEBUG_CONFIG, "Debug", True),
-    (RELEASE_CONFIG, "Release", True),
-    (DEBUG_CONFIG_TARGET, "Debug", False),
-    (RELEASE_CONFIG_TARGET, "Release", False),
+for cid, name, kind in [
+    (DEBUG_CONFIG, "Debug", "proj"),
+    (RELEASE_CONFIG, "Release", "proj"),
+    (DEBUG_CONFIG_TARGET, "Debug", "app"),
+    (RELEASE_CONFIG_TARGET, "Release", "app"),
+    (DEBUG_CONFIG_TEST, "Debug", "test"),
+    (RELEASE_CONFIG_TEST, "Release", "test"),
 ]:
     w(f"\t\t{cid} /* {name} */ = {{")
     w("\t\t\tisa = XCBuildConfiguration;")
     w("\t\t\tbuildSettings = {")
-    if is_proj:
+    if kind == "proj":
         w("\t\t\t\tALWAYS_SEARCH_USER_PATHS = NO;")
         w("\t\t\t\tCLANG_ENABLE_MODULES = YES;")
         w("\t\t\t\tCOPY_PHASE_STRIP = NO;")
@@ -274,6 +383,14 @@ for cid, name, is_proj in [
         w("\t\t\t\tSDKROOT = macosx;")
         w("\t\t\t\tSWIFT_ACTIVE_COMPILATION_CONDITIONS = \"DEBUG $(inherited)\";" if name == "Debug" else "")
         w("\t\t\t\tSWIFT_OPTIMIZATION_LEVEL = \"-Onone\";" if name == "Debug" else "\t\t\t\tSWIFT_OPTIMIZATION_LEVEL = \"-O\";")
+    elif kind == "test":
+        w("\t\t\t\tALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;")
+        w("\t\t\t\tCODE_SIGN_STYLE = Automatic;")
+        w("\t\t\t\tGENERATE_INFOPLIST_FILE = YES;")
+        w("\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.clipword.app.tests;")
+        w("\t\t\t\tPRODUCT_NAME = \"$(TARGET_NAME)\";")
+        w("\t\t\t\tSWIFT_EMIT_LOC_STRINGS = NO;")
+        w("\t\t\t\tSWIFT_VERSION = 6.0;")
     else:
         w("\t\t\t\tASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;")
         w("\t\t\t\tASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;")
@@ -320,6 +437,16 @@ w("\t\t\tdefaultConfigurationIsVisible = 0;")
 w("\t\t\tdefaultConfigurationName = Release;")
 w("\t\t};")
 
+w(f"\t\t{CONFIG_LIST_TEST} /* Build configuration list for PBXNativeTarget \"ClipwordTests\" */ = {{")
+w("\t\t\tisa = XCConfigurationList;")
+w("\t\t\tbuildConfigurations = (")
+w(f"\t\t\t\t{DEBUG_CONFIG_TEST} /* Debug */,")
+w(f"\t\t\t\t{RELEASE_CONFIG_TEST} /* Release */,")
+w("\t\t\t);")
+w("\t\t\tdefaultConfigurationIsVisible = 0;")
+w("\t\t\tdefaultConfigurationName = Release;")
+w("\t\t};")
+
 w("\t};")
 w(f"\trootObject = {PROJECT_ID} /* Project object */;")
 w("}")
@@ -353,6 +480,25 @@ scheme = """<?xml version="1.0" encoding="UTF-8"?>
          </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
+   <TestAction
+      buildConfiguration = "Debug"
+      selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
+      selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
+      shouldUseLaunchSchemeArgsEnv = "YES">
+      <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "%s"
+               BuildableName = "ClipwordTests.xctest"
+               BlueprintName = "ClipwordTests"
+               ReferencedContainer = "container:Clipword.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+      </Testables>
+   </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
@@ -375,7 +521,7 @@ scheme = """<?xml version="1.0" encoding="UTF-8"?>
       </BuildableProductRunnable>
    </LaunchAction>
 </Scheme>
-""" % (TARGET_ID, TARGET_ID)
+""" % (TARGET_ID, TEST_TARGET_ID, TARGET_ID)
 
 scheme_dir = os.path.join(out_dir, "xcshareddata", "xcschemes")
 os.makedirs(scheme_dir, exist_ok=True)

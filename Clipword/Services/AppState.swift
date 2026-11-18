@@ -87,7 +87,12 @@ final class AppState {
     let clipboardMonitor = ClipboardMonitor()
 
     var paletteSource: PaletteSource = .history
-    var paletteSelection: PaletteSelection?
+    var paletteSelection: PaletteSelection? {
+        // didSet runs post-commit (the new value), synchronously — unlike
+        // withObservationTracking's willSet-phase onChange — so every write
+        // site gets an instant, correct row-state update + table highlight.
+        didSet { PaletteSelectionRegistry.shared.apply(selection: paletteSelection) }
+    }
     /// Folders the user collapsed in Bookmarks. Kept across hide/show.
     var collapsedFolderIDs: Set<UUID> = []
     /// Pixel offsets for the palette list and preview panes. Survives focus loss.
@@ -126,6 +131,10 @@ final class AppState {
 
     func showSettings(section: SettingsSection = .general) {
         WindowManager.shared.showSettingsWindow(section: section)
+    }
+
+    func closeSettings() {
+        WindowManager.shared.handleSettingsClosed()
     }
 
     func requestSearchFocus() {

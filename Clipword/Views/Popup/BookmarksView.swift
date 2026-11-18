@@ -336,21 +336,25 @@ struct BookmarksView: View {
                                     emphasized: historyStore.selectedBookmarkID == item.id && focus == .list,
                                     folderName: isFiltering ? item.folder?.name : nil
                                 )
+                                .equatable()
                                 .id(item.id)
                                 .keyboardListRow(
                                     selected: historyStore.selectedBookmarkID == item.id,
                                     listActive: focus == .list
                                 )
+                                .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
                                 .onTapGesture {
                                     historyStore.selectedBookmarkID = item.id
                                     focus = .list
                                     searchFieldActive = false
                                 }
-                                .onTapGesture(count: 2) {
-                                    historyStore.selectBookmark(item, paste: NSEvent.modifierFlags.contains(.option))
-                                    appState.hideWindow()
-                                }
+                                .simultaneousGesture(
+                                    TapGesture(count: 2).onEnded { _ in
+                                        historyStore.selectBookmark(item, paste: NSEvent.modifierFlags.contains(.option))
+                                        appState.hideWindow()
+                                    }
+                                )
                                 .contextMenu { bookmarkContextMenu(for: item) }
                             }
                         }
@@ -706,7 +710,7 @@ struct BookmarksView: View {
     }
 }
 
-struct BookmarkRowView: View {
+struct BookmarkRowView: View, Equatable {
     let item: BookmarkItem
     var emphasized: Bool = false
     var folderName: String? = nil

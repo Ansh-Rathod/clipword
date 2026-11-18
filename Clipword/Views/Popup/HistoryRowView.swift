@@ -2,7 +2,7 @@ import AppKit
 import Defaults
 import SwiftUI
 
-struct HistoryRowView: View {
+struct HistoryRowView: View, Equatable {
     let item: HistoryItem
     var emphasized: Bool = false
     var recentlyActed: Bool = false

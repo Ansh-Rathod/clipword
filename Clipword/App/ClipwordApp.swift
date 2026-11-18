@@ -58,6 +58,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WindowManager.shared.configure(historyStore: store, appState: state)
         statusBarController.install(appState: state)
         registerHotkeys()
+
+        #if DEBUG
+        DebugTools.handleLaunchArguments(appState: state)
+        #endif
     }
 
     /// One-time default migrations (safe to run before any SwiftData work).

@@ -38,7 +38,8 @@ extension BookmarkFolder: Hashable {
 @Model
 final class BookmarkItem {
     var id: UUID
-    var contentData: Data
+    @Attribute(.externalStorage) var contentData: Data
+    var contentHash: String?
     var plainText: String?
     var contentTypeRaw: String
     var contentCategoryRaw: String = ClipboardCategory.plainText.rawValue
@@ -50,7 +51,7 @@ final class BookmarkItem {
     var lineCount: Int
     var charCount: Int
     var readingTimeSeconds: Int
-    var imageData: Data?
+    @Attribute(.externalStorage) var imageData: Data?
     var title: String?
     var folder: BookmarkFolder?
 
@@ -67,6 +68,7 @@ final class BookmarkItem {
     init(from item: HistoryItem) {
         self.id = UUID()
         self.contentData = item.contentData
+        self.contentHash = item.contentHash ?? ContentHasher.hex(item.contentData)
         self.plainText = item.plainText
         self.contentTypeRaw = item.contentTypeRaw
         self.contentCategoryRaw = item.contentCategoryRaw

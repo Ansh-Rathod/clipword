@@ -70,6 +70,20 @@ final class StatusBarController: NSObject {
         menu.addItem(item("Settings…", action: #selector(openSettings), image: "gear"))
         menu.addItem(.separator())
 
+        #if DEBUG
+        let debugMenu = NSMenu()
+        debugMenu.addItem(debugItem("Seed 1,500 items", action: #selector(seed1500)))
+        debugMenu.addItem(debugItem("Seed 5,000 items", action: #selector(seed5000)))
+        debugMenu.addItem(debugItem("Clear seeded items", action: #selector(clearSeeded)))
+        debugMenu.addItem(.separator())
+        debugMenu.addItem(debugItem("Run perf self-test", action: #selector(runSelfTest)))
+        let debugRoot = NSMenuItem(title: "Debug", action: nil, keyEquivalent: "")
+        debugRoot.image = NSImage(systemSymbolName: "ladybug", accessibilityDescription: "Debug")
+        debugRoot.submenu = debugMenu
+        menu.addItem(debugRoot)
+        menu.addItem(.separator())
+        #endif
+
         let quitItem = NSMenuItem(title: "Quit Clipword", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -83,6 +97,46 @@ final class StatusBarController: NSObject {
         menuItem.image = NSImage(systemSymbolName: image, accessibilityDescription: title)
         return menuItem
     }
+
+    #if DEBUG
+    private func debugItem(_ title: String, action: Selector) -> NSMenuItem {
+        let menuItem = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        menuItem.target = self
+        return menuItem
+    }
+
+    // Debug actions run directly — no panel needed, output goes to stdout
+    // (visible under run.sh) and `log stream --predicate 'subsystem ==
+    // "com.clipword.app"'`.
+    @objc private func seed1500() {
+        guard let store = appState?.historyStore else { return }
+        DebugTools.seedItems(1500, into: store)
+    }
+
+    @objc private func seed5000() {
+        guard let store = appState?.historyStore else { return }
+        DebugTools.seedItems(5000, into: store)
+    }
+
+    @objc private func clearSeeded() {
+        guard let store = appState?.historyStore else { return }
+        DebugTools.clearSeededItems(from: store)
+    }
+
+    @objc private func runSelfTest() {
+        guard let appState else { return }
+        let report = DebugTools.runPerfSelfTest(
+            store: appState.historyStore,
+            search: appState.searchService
+        )
+        // Also surface in-app so there's feedback without a console.
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Performance self-test"
+        alert.informativeText = report
+        alert.runModal()
+    }
+    #endif
 
     @objc func openClipboard() { pendingMenuAction = { $0.showWindow(source: .history) } }
     @objc func openBookmarks() { pendingMenuAction = { $0.showWindow(source: .bookmarks) } }

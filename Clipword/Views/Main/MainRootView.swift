@@ -15,11 +15,24 @@ struct MainRootView: View {
     @State private var assignBookmarkItem: BookmarkItem?
     @State private var renameTarget: BookmarkFolder?
     @State private var listScrollTarget: String?
+    /// Table row for programmatic reveals — stored at reveal time so the List
+    /// subtree never has to read `paletteSelection` to find it.
+    @State private var programmaticTableRow: Int?
     @State private var listRevealToken = 0
     @State private var toast: HistoryActionEvent?
     @State private var toastHideTask: Task<Void, Never>?
     @State private var recentlyActedID: UUID?
-    @State private var listFocused = false
+    @State private var listFocusedState = false
+    /// Writes mirror into `PaletteSelectionRegistry` so only the selected
+    /// row's `isActive` flips — reading paletteSelection/listFocused in this
+    /// body would reconstruct all 1,600+ rows per change.
+    private var listFocused: Bool {
+        get { listFocusedState }
+        nonmutating set {
+            listFocusedState = newValue
+            PaletteSelectionRegistry.shared.setActive(newValue)
+        }
+    }
     @State private var showingTimeFilter = false
     @FocusState private var searchFieldActive: Bool
     @FocusState private var backButtonFocused: Bool
@@ -27,112 +40,36 @@ struct MainRootView: View {
 
     private var selectedHistoryItem: HistoryItem? {
         guard case .history(let id) = appState.paletteSelection else { return nil }
-        return historyRows.first { $0.id == id }
+        return historyStore.itemsByID[id]
     }
 
     private var selectedBookmarkItem: BookmarkItem? {
         guard case .bookmark(let id) = appState.paletteSelection else { return nil }
-        return bookmarkRows.first { $0.id == id }
+        return historyStore.bookmarkItemsByID[id]
     }
 
     private var selectedFolder: BookmarkFolder? {
         guard case .folder(let id) = appState.paletteSelection else { return nil }
-        return historyStore.folders.first { $0.id == id }
+        return historyStore.foldersByID[id]
     }
 
-    private var bookmarkRows: [BookmarkItem] {
-        guard appState.paletteSource == .bookmarks else { return [] }
-        var result = historyStore.bookmarks
-        if let category = historyStore.activeCategory {
-            result = result.filter { $0.category == category }
-        }
-        if let bundleId = historyStore.activeAppBundleId {
-            result = result.filter { $0.applicationBundleId == bundleId }
-        }
-        if !historyStore.searchQuery.isEmpty {
-            result = searchService.searchBookmarks(query: historyStore.searchQuery, in: result)
-        }
-        return result
-    }
-
-    private var historyRows: [HistoryItem] {
-        guard appState.paletteSource == .history else { return [] }
-        return historyStore.displayedItems
-    }
-
-    private var isFilteringBookmarks: Bool {
-        historyStore.activeCategory != nil
-            || historyStore.activeAppBundleId != nil
-            || !historyStore.searchQuery.isEmpty
-    }
-
+    /// History rows/sections/indices are precomputed in `HistoryStore` once per
+    /// data change. Bookmark sections come back precomputed too; only the
+    /// collapse-aware flattening stays here (bookmarks are few).
     private var bookmarkSections: [PaletteBookmarkSection] {
-        let items = bookmarkRows
-        if historyStore.folders.isEmpty {
-            guard !items.isEmpty else { return [] }
-            return [PaletteBookmarkSection(id: "bookmarks", title: "Bookmarks", folder: nil, items: items)]
-        }
-
-        var sections: [PaletteBookmarkSection] = []
-        for folder in historyStore.folders {
-            let folderItems = items.filter { $0.folder?.id == folder.id }
-            if folderItems.isEmpty && isFilteringBookmarks { continue }
-            sections.append(
-                PaletteBookmarkSection(
-                    id: folder.id.uuidString,
-                    title: folder.name,
-                    folder: folder,
-                    items: folderItems
-                )
-            )
-        }
-        let unfiled = items.filter { $0.folder == nil }
-        if !unfiled.isEmpty {
-            sections.append(
-                PaletteBookmarkSection(id: "unfiled", title: "Unfiled", folder: nil, items: unfiled)
-            )
-        }
-        return sections
+        guard appState.paletteSource == .bookmarks else { return [] }
+        return historyStore.paletteBookmarkSections
     }
 
-    private var historySections: [HistoryDaySection] {
-        let calendar = Calendar.current
-        let extractPins = !historyStore.timeFilter.isActive
-        var pinned: [HistoryItem] = []
-        var buckets: [Date: [HistoryItem]] = [:]
-
-        for item in historyRows {
-            if extractPins && item.isPinned {
-                pinned.append(item)
-                continue
-            }
-            let day = calendar.startOfDay(for: item.lastCopiedAt)
-            buckets[day, default: []].append(item)
-        }
-
-        var sections: [HistoryDaySection] = []
-        if extractPins, Defaults[.pinPosition] == .top, !pinned.isEmpty {
-            sections.append(HistoryDaySection(id: "pinned", title: "Pinned", items: pinned))
-        }
-        for day in buckets.keys.sorted(by: >) {
-            sections.append(
-                HistoryDaySection(
-                    id: "day-\(Int(day.timeIntervalSince1970))",
-                    title: HistoryTimeFilter.sectionTitle(for: day, calendar: calendar),
-                    items: buckets[day] ?? []
-                )
-            )
-        }
-        if extractPins, Defaults[.pinPosition] == .bottom, !pinned.isEmpty {
-            sections.append(HistoryDaySection(id: "pinned", title: "Pinned", items: pinned))
-        }
-        return sections
+    private var historySections: [PaletteDaySection] {
+        guard appState.paletteSource == .history else { return [] }
+        return historyStore.paletteDaySections
     }
 
     private var flattenedRows: [PaletteRow] {
         switch appState.paletteSource {
         case .history:
-            return historySections.flatMap { $0.items.map { .history($0) } }
+            return historyStore.paletteRows
         case .bookmarks:
             return bookmarkSections.flatMap { section -> [PaletteRow] in
                 if let folder = section.folder {
@@ -147,10 +84,20 @@ struct MainRootView: View {
         }
     }
 
+    /// Triggers list refresh animations and re-selection, replacing the old
+    /// `flattenedRows.map(\.id)` diff (which rebuilt a 1000-string array on
+    /// every body evaluation).
+    private var rowSetKey: RowSetKey {
+        RowSetKey(
+            version: historyStore.paletteVersion,
+            collapsed: appState.collapsedFolderIDs
+        )
+    }
+
     private var isEmpty: Bool {
         switch appState.paletteSource {
         case .history:
-            return historyRows.isEmpty
+            return historyStore.paletteRows.isEmpty
         case .bookmarks:
             return bookmarkSections.isEmpty
         }
@@ -167,7 +114,15 @@ struct MainRootView: View {
                     resultsList
                         .frame(minWidth: 240, idealWidth: 300, maxWidth: 360)
                     Divider()
-                    previewPane
+                    PalettePreviewPane(
+                        appState: appState,
+                        historyStore: historyStore,
+                        isCollapsed: isCollapsed,
+                        onEditHistory: { editingHistoryItem = $0 },
+                        onEditBookmark: { editingBookmarkItem = $0 },
+                        onNewFolder: { beginNewFolder(assigningHistory: $0) },
+                        onMoveBookmark: { showBookmarkFolderMenu(for: $0) }
+                    )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .overlay(alignment: .top) {
@@ -198,7 +153,42 @@ struct MainRootView: View {
             confirmTitle: renameTarget == nil ? "Create" : "Rename",
             onConfirm: confirmFolderName
         )
-        .onAppear { prepareForWindowPresentation() }
+        .onAppear {
+            let registry = PaletteSelectionRegistry.shared
+            // Same math as `tableRow(for:)` — can't capture `self` (View is a
+            // value type); the provider only needs the observable stores.
+            registry.tableRowProvider = { [appState, historyStore] selection in
+                guard let selection else { return nil }
+                switch appState.paletteSource {
+                case .history:
+                    return historyStore.paletteTableRowBySelection[selection]
+                case .bookmarks:
+                    var row = 0
+                    for section in historyStore.paletteBookmarkSections {
+                        if let folder = section.folder {
+                            if selection == .folder(folder.id) { return row }
+                            row += 1
+                            let collapsed = !historyStore.searchQuery.isEmpty
+                                ? false
+                                : appState.collapsedFolderIDs.contains(folder.id)
+                            guard !collapsed else { continue }
+                            if section.items.isEmpty { row += 1; continue }
+                            for item in section.items {
+                                if selection == .bookmark(item.id) { return row }
+                                row += 1
+                            }
+                        } else {
+                            for item in section.items {
+                                if selection == .bookmark(item.id) { return row }
+                                row += 1
+                            }
+                        }
+                    }
+                    return nil
+                }
+            }
+            prepareForWindowPresentation()
+        }
         .onChange(of: appState.windowPresentationToken) { _, _ in
             prepareForWindowPresentation()
         }
@@ -255,7 +245,7 @@ struct MainRootView: View {
             selectFirstRow(preferExisting: false)
             focusSearch()
         }
-        .onChange(of: flattenedRows.map(\.id)) { _, _ in
+        .onChange(of: rowSetKey) { _, _ in
             selectFirstRow(preferExisting: true)
         }
         .onChange(of: historyStore.lastAction?.token) { _, _ in
@@ -420,52 +410,21 @@ struct MainRootView: View {
 
             Spacer(minLength: 8)
 
-            if primaryActionTitle != nil || canShowItemActions {
-                footerPill { actionCapsuleContent }
-            }
+            PaletteActionCapsule(
+                appState: appState,
+                historyStore: historyStore,
+                pasteAutomatically: pasteAutomatically,
+                isCollapsed: isCollapsed,
+                onPrimary: { _ = pasteSelected() },
+                onActions: {
+                    listFocused = true
+                    showSelectedItemMenu()
+                }
+            )
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .clipwordChromeBackground()
-    }
-
-    private var actionCapsuleContent: some View {
-        HStack(spacing: 0) {
-            if let primaryActionTitle {
-                Button {
-                    _ = pasteSelected()
-                } label: {
-                    HStack(spacing: 6) {
-                        Text(primaryActionTitle)
-                        PaletteKeycap(systemImage: "return")
-                    }
-                }
-                .buttonStyle(.plain)
-                .focusable(false)
-                .pointingHandCursor()
-                .disabled(appState.paletteSelection == nil)
-
-                if canShowItemActions {
-                    capsuleDivider
-                }
-            }
-
-            if canShowItemActions {
-                Button {
-                    listFocused = true
-                    showSelectedItemMenu()
-                } label: {
-                    HStack(spacing: 6) {
-                        Text("Actions")
-                        PaletteKeycap(text: "⌘")
-                        PaletteKeycap(text: "K")
-                    }
-                }
-                .buttonStyle(.plain)
-                .focusable(false)
-                .pointingHandCursor()
-            }
-        }
     }
 
     private func footerPill<Content: View>(@ViewBuilder content: () -> Content) -> some View {
@@ -476,27 +435,6 @@ struct MainRootView: View {
             .padding(.vertical, LiquidGlassMetrics.pillPaddingV)
             .contentShape(Capsule())
             .liquidGlass(.interactive, in: Capsule(), fallback: Color.primary.opacity(0.10))
-    }
-
-    private var capsuleDivider: some View {
-        Rectangle()
-            .fill(Color.primary.opacity(0.12))
-            .frame(width: 1, height: 16)
-            .padding(.horizontal, 12)
-    }
-
-    private var primaryActionTitle: String? {
-        if let folder = selectedFolder {
-            return isCollapsed(folder) ? "Expand" : "Collapse"
-        }
-        if selectedHistoryItem != nil || selectedBookmarkItem != nil {
-            return pasteAutomatically ? "Paste" : "Copy to Clipboard"
-        }
-        return nil
-    }
-
-    private var canShowItemActions: Bool {
-        selectedHistoryItem != nil || selectedBookmarkItem != nil
     }
 
     private func togglePaletteSource() {
@@ -629,7 +567,11 @@ struct MainRootView: View {
             counts[item.applicationBundleId ?? "unknown", default: 0] += 1
         }
         return counts.map { bundleId, count in
-            AppFilterOption(bundleId: bundleId, name: appName(for: bundleId), count: count)
+            AppFilterOption(
+                bundleId: bundleId,
+                name: historyStore.appDisplayName(for: bundleId),
+                count: count
+            )
         }
         .sorted { $0.count > $1.count }
     }
@@ -712,16 +654,24 @@ struct MainRootView: View {
                 }
             }
             .listStyle(.sidebar)
+            .pointerStyle(.default)
             .scrollContentBackground(.hidden)
             .background(.clear)
             .background(RefuseListFirstResponder().frame(width: 0, height: 0))
-            .scrollToVisible(target: listScrollTarget, tableRow: selectedTableRow)
+            .background(
+                TableContextMenuInstaller(
+                    menu: { tableRow in tableContextMenu(forTableRow: tableRow) },
+                    click: { row, count in handleTableClick(row, clickCount: count) }
+                )
+                .frame(width: 0, height: 0)
+            )
+            .scrollToVisible(target: listScrollTarget, tableRow: programmaticTableRow)
             .persistScrollOffset(
                 store: appState.scrollStore,
                 key: PaletteScrollKey.list(.history),
                 restoreToken: appState.windowPresentationToken
             )
-            .animation(.snappy(duration: 0.32), value: flattenedRows.map(\.id))
+            .animation(.snappy(duration: 0.32), value: rowSetKey)
         case .bookmarks:
             List {
                 ForEach(bookmarkSections) { section in
@@ -748,133 +698,50 @@ struct MainRootView: View {
                 }
             }
             .listStyle(.sidebar)
+            .pointerStyle(.default)
             .scrollContentBackground(.hidden)
             .background(.clear)
             .background(RefuseListFirstResponder().frame(width: 0, height: 0))
-            .scrollToVisible(target: listScrollTarget, tableRow: selectedTableRow)
+            .background(
+                TableContextMenuInstaller(
+                    menu: { tableRow in tableContextMenu(forTableRow: tableRow) },
+                    click: { row, count in handleTableClick(row, clickCount: count) }
+                )
+                .frame(width: 0, height: 0)
+            )
+            .scrollToVisible(target: listScrollTarget, tableRow: programmaticTableRow)
             .persistScrollOffset(
                 store: appState.scrollStore,
                 key: PaletteScrollKey.list(.bookmarks),
                 restoreToken: appState.windowPresentationToken
             )
-            .animation(.snappy(duration: 0.32), value: flattenedRows.map(\.id))
+            .animation(.snappy(duration: 0.32), value: rowSetKey)
         }
     }
 
     private func historyRow(_ item: HistoryItem) -> some View {
-        let selected = appState.paletteSelection == .history(item.id)
-        return HistoryRowView(
+        PaletteHistoryRow(
             item: item,
-            emphasized: selected && listFocused,
+            sel: PaletteSelectionRegistry.shared.state(for: PaletteRow.historyID(item.id)),
             recentlyActed: recentlyActedID == item.id
         )
-        .id(PaletteRow.history(item).id)
-        .keyboardListRow(selected: selected, listActive: listFocused)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            appState.paletteSelection = .history(item.id)
-            historyStore.selectedItemID = item.id
-            listFocused = true
-            focusSearch()
-        }
-        .onTapGesture(count: 2) {
-            historyStore.select(item, paste: NSEvent.modifierFlags.contains(.option))
-            appState.hideWindow()
-        }
-        .contextMenu { historyContextMenu(for: item) }
     }
 
     private func folderRow(_ folder: BookmarkFolder, count: Int) -> some View {
-        let selected = appState.paletteSelection == .folder(folder.id)
-        let collapsed = isCollapsed(folder)
-        return HStack(spacing: 10) {
-            Image(systemName: collapsed ? "chevron.right" : "chevron.down")
-                .font(.caption.weight(.semibold))
-                .frame(width: 18)
-            Image(systemName: "folder.fill")
-                .font(.body)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(folder.name)
-                    .lineLimit(1)
-                Text(count == 1 ? "1 item" : "\(count) items")
-                    .font(.caption)
-                    .foregroundStyle(selected && listFocused ? Color.white.opacity(0.75) : Color.secondary)
-            }
-            Spacer(minLength: 0)
-        }
-        .foregroundStyle(selected && listFocused ? Color.white : Color.primary)
-        .padding(.vertical, 2)
-        .id(PaletteRow.folder(folder, count: count).id)
-        .keyboardListRow(selected: selected, listActive: listFocused)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            applySelection(.folder(folder, count: count), reveal: false)
-            listFocused = true
-            focusSearch()
-        }
-        .onTapGesture(count: 2) {
-            toggleFolder(folder)
-        }
-        .contextMenu {
-            Button(collapsed ? "Expand" : "Collapse") { toggleFolder(folder) }
-            Button("Rename…") { beginRename(folder) }
-            Button("Delete Folder", role: .destructive) {
-                historyStore.deleteFolder(folder)
-                appState.collapsedFolderIDs.remove(folder.id)
-            }
-        }
+        PaletteFolderRow(
+            folder: folder,
+            count: count,
+            collapsed: isCollapsed(folder),
+            sel: PaletteSelectionRegistry.shared.state(for: PaletteRow.folderID(folder.id))
+        )
     }
 
     private func bookmarkRow(_ item: BookmarkItem, showFolderName: Bool = false) -> some View {
-        let selected = appState.paletteSelection == .bookmark(item.id)
-        return BookmarkRowView(
+        PaletteBookmarkRow(
             item: item,
-            emphasized: selected && listFocused,
-            folderName: showFolderName ? item.folder?.name : nil
+            showFolderName: showFolderName,
+            sel: PaletteSelectionRegistry.shared.state(for: PaletteRow.bookmarkID(item.id))
         )
-        .id(PaletteRow.bookmark(item).id)
-        .keyboardListRow(selected: selected, listActive: listFocused)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            appState.paletteSelection = .bookmark(item.id)
-            historyStore.selectedBookmarkID = item.id
-            listFocused = true
-            focusSearch()
-        }
-        .onTapGesture(count: 2) {
-            historyStore.selectBookmark(item, paste: NSEvent.modifierFlags.contains(.option))
-            appState.hideWindow()
-        }
-        .contextMenu { bookmarkContextMenu(for: item) }
-    }
-
-    @ViewBuilder
-    private var previewPane: some View {
-        if let item = selectedHistoryItem {
-            ClipboardDetailPane(
-                item: item,
-                onEdit: { editingHistoryItem = item },
-                onNewFolder: { beginNewFolder(assigningHistory: item) }
-            )
-        } else if let item = selectedBookmarkItem {
-            BookmarkDetailPane(
-                item: item,
-                onEdit: { editingBookmarkItem = item },
-                onMoveFolder: { showBookmarkFolderMenu(for: item) }
-            )
-        } else if let folder = selectedFolder {
-            let count = bookmarkRows.filter { $0.folder?.id == folder.id }.count
-            ContentUnavailableView(
-                folder.name,
-                systemImage: "folder.fill",
-                description: Text(isCollapsed(folder)
-                    ? "\(count == 1 ? "1 item" : "\(count) items") · Return to expand"
-                    : "\(count == 1 ? "1 item" : "\(count) items") · ↓ to browse · Return to collapse")
-            )
-        } else {
-            ContentUnavailableView("Select an item", systemImage: "doc.on.clipboard")
-        }
     }
 
     private func prepareForWindowPresentation() {
@@ -924,10 +791,15 @@ struct MainRootView: View {
 
     private func selectFirstRow(preferExisting: Bool = false) {
         let rows = flattenedRows
-        if preferExisting,
-           let current = appState.paletteSelection,
-           rows.contains(where: { $0.selection == current }) {
-            return
+        if preferExisting, let current = appState.paletteSelection {
+            switch appState.paletteSource {
+            case .history where historyStore.paletteIndexBySelection[current] != nil:
+                return
+            case .bookmarks where rows.contains(where: { $0.selection == current }):
+                return
+            default:
+                break
+            }
         }
         if let first = rows.first {
             applySelection(first, reveal: false)
@@ -938,23 +810,11 @@ struct MainRootView: View {
         }
     }
 
-    private var selectedTableRow: Int? {
-        tableRow(for: appState.paletteSelection)
-    }
-
     private func tableRow(for selection: PaletteSelection?) -> Int? {
         guard let selection else { return nil }
         switch appState.paletteSource {
         case .history:
-            var row = 0
-            for section in historySections {
-                row += 1
-                for item in section.items {
-                    if selection == .history(item.id) { return row }
-                    row += 1
-                }
-            }
-            return nil
+            return historyStore.paletteTableRowBySelection[selection]
         case .bookmarks:
             var row = 0
             for section in bookmarkSections {
@@ -983,7 +843,7 @@ struct MainRootView: View {
 
     private func applySelection(_ row: PaletteRow, reveal: Bool = true) {
         appState.paletteSelection = row.selection
-        switch row {
+        switch row.content {
         case .history(let item):
             historyStore.selectedItemID = item.id
             historyStore.selectedBookmarkID = nil
@@ -1001,23 +861,20 @@ struct MainRootView: View {
 
     private func revealSelection(_ row: PaletteRow) {
         listScrollTarget = row.id
+        programmaticTableRow = tableRow(for: row.selection)
         listRevealToken += 1
     }
 
     private func toggleFolder(_ folder: BookmarkFolder) {
-        let collapsing = !isCollapsed(folder)
         appState.collapsedFolderIDs.formSymmetricDifference([folder.id])
-        let count = bookmarkRows.filter { $0.folder?.id == folder.id }.count
-        if collapsing, case .bookmark(let id) = appState.paletteSelection,
-           bookmarkRows.first(where: { $0.id == id })?.folder?.id == folder.id {
-            applySelection(.folder(folder, count: count))
-        } else {
-            applySelection(.folder(folder, count: count))
-        }
+        let count = historyStore.paletteBookmarkSections
+            .first { $0.folder?.id == folder.id }?.items.count ?? 0
+        applySelection(.folder(folder, count: count))
         focusSearch()
     }
 
     private func moveSelection(_ delta: Int) -> KeyPress.Result {
+        Perf.event("palette.moveSelection", "delta=\(delta)")
         if backButtonFocused {
             if delta > 0 {
                 focusSearch()
@@ -1039,9 +896,17 @@ struct MainRootView: View {
 
         guard !rows.isEmpty else { return .handled }
 
-        let current = appState.paletteSelection.flatMap { selection in
-            rows.firstIndex { $0.selection == selection }
-        } ?? 0
+        let current: Int
+        if let selection = appState.paletteSelection {
+            switch appState.paletteSource {
+            case .history:
+                current = historyStore.paletteIndexBySelection[selection] ?? 0
+            case .bookmarks:
+                current = rows.firstIndex { $0.selection == selection } ?? 0
+            }
+        } else {
+            current = 0
+        }
 
         if delta < 0 && current <= 0 {
             listFocused = false
@@ -1052,6 +917,11 @@ struct MainRootView: View {
         }
 
         let next = min(rows.count - 1, max(0, current + delta))
+        #if DEBUG
+        if DebugTools.navTestActive {
+            DebugTools.navLog("[mv] delta=\(delta) cur=\(current) next=\(next) focused=\(listFocused)")
+        }
+        #endif
         applySelection(rows[next])
         return .handled
     }
@@ -1134,69 +1004,107 @@ struct MainRootView: View {
         }
     }
 
-    @ViewBuilder
-    private func historyContextMenu(for item: HistoryItem) -> some View {
-        Button("Copy") { historyStore.select(item, paste: false) }
-            .keyboardShortcut("c")
-        Button("Paste") {
-            historyStore.select(item, paste: true)
-            appState.hideWindow()
+    /// Left-click on the list's `NSTableView` (single = clickCount 1, double =
+    /// 2 — the second click of a double arrives as count 2 with no added
+    /// delay). Mirrors what the old per-row tap gestures did: single-click
+    /// selects + focuses, double-click acts (paste/expand). Returns false for
+    /// section headers so their clicks fall through.
+    private func handleTableClick(_ tableRow: Int, clickCount: Int) -> Bool {
+        #if DEBUG
+        DebugTools.clickMark("tap")
+        #endif
+        switch appState.paletteSource {
+        case .history:
+            var index = tableRow
+            for section in historyStore.paletteDaySections {
+                index -= 1 // section header occupies one table row
+                if index < 0 { return false }
+                if index < section.items.count {
+                    let item = section.items[index]
+                    if clickCount >= 2 {
+                        historyStore.select(item, paste: NSEvent.modifierFlags.contains(.option))
+                        appState.hideWindow()
+                    } else {
+                        appState.paletteSelection = .history(item.id)
+                        historyStore.selectedItemID = item.id
+                        listFocused = true
+                        focusSearch()
+                        #if DEBUG
+                        DebugTools.clickMark("sel-written")
+                        #endif
+                    }
+                    return true
+                }
+                index -= section.items.count
+            }
+            return false
+        case .bookmarks:
+            guard flattenedRows.indices.contains(tableRow) else { return false }
+            switch flattenedRows[tableRow].content {
+            case .bookmark(let item):
+                if clickCount >= 2 {
+                    historyStore.selectBookmark(item, paste: NSEvent.modifierFlags.contains(.option))
+                    appState.hideWindow()
+                } else {
+                    appState.paletteSelection = .bookmark(item.id)
+                    historyStore.selectedBookmarkID = item.id
+                    listFocused = true
+                    focusSearch()
+                }
+                return true
+            case .folder(let folder, let count):
+                if clickCount >= 2 {
+                    toggleFolder(folder)
+                } else {
+                    applySelection(.folder(folder, count: count), reveal: false)
+                    listFocused = true
+                    focusSearch()
+                }
+                return true
+            case .history:
+                return false
+            }
         }
-        Button("Add to Paste Stack") { historyStore.addToPasteStack(item) }
-            .keyboardShortcut("v", modifiers: [.command, .shift])
-        Divider()
-        Button("Edit…") { editingHistoryItem = item }
-            .keyboardShortcut("e")
-        Button(item.isBookmarked ? "Remove Bookmark" : "Bookmark") {
-            historyStore.toggleBookmark(item)
-        }
-        .keyboardShortcut("b", modifiers: .option)
-        Menu("Add to Folder") {
-            BookmarkFolderPickerButtons(
-                folders: historyStore.folders,
-                currentFolderID: historyStore.folder(forHistoryItem: item)?.id,
-                onPick: { folder in
-                    if let folder { historyStore.bookmark(item, in: folder) }
-                },
-                onNew: { beginNewFolder(assigningHistory: item) }
-            )
-        }
-        Button(item.isPinned ? "Unpin" : "Pin") { historyStore.togglePin(item) }
-            .keyboardShortcut("p", modifiers: .option)
-        Divider()
-        Button("Delete", role: .destructive) { historyStore.delete(item) }
-            .keyboardShortcut(.delete, modifiers: .command)
     }
 
-    @ViewBuilder
-    private func bookmarkContextMenu(for item: BookmarkItem) -> some View {
-        Button("Copy") { historyStore.selectBookmark(item, paste: false) }
-            .keyboardShortcut("c")
-        Button("Paste") {
-            historyStore.selectBookmark(item, paste: true)
-            appState.hideWindow()
+    /// Right-click menus come from one `NSMenu` installed on the list's
+    /// `NSTableView` (`TableContextMenuInstaller`) — SwiftUI `.contextMenu`
+    /// modifiers would be evaluated for every row on every body pass.
+    private func tableContextMenu(forTableRow tableRow: Int) -> NSMenu? {
+        let menu = buildTableContextMenu(forTableRow: tableRow)
+        #if DEBUG
+        if DebugTools.navTestActive {
+            DebugTools.navLog("[menu] row=\(tableRow) items=\(menu?.numberOfItems ?? 0)")
         }
-        Divider()
-        Button("Edit…") { editingBookmarkItem = item }
-            .keyboardShortcut("e")
-        Menu("Move to Folder") {
-            BookmarkFolderPickerButtons(
-                folders: historyStore.folders,
-                currentFolderID: item.folder?.id,
-                allowUnfiled: true,
-                onPick: { historyStore.moveBookmark(item, to: $0) },
-                onNew: { beginNewFolder(assigningBookmark: item) }
-            )
-        }
-        Divider()
-        Button("Remove Bookmark", role: .destructive) {
-            historyStore.deleteBookmark(item)
-        }
-        .keyboardShortcut(.delete, modifiers: .command)
+        #endif
+        return menu
     }
 
-    private func showHistoryMenu(_ item: HistoryItem) {
-        KeyboardContextMenu.popHistory(
+    private func buildTableContextMenu(forTableRow tableRow: Int) -> NSMenu? {
+        switch appState.paletteSource {
+        case .history:
+            var index = tableRow
+            for section in historyStore.paletteDaySections {
+                index -= 1 // each section header occupies one table row
+                if index < 0 { return nil }
+                if index < section.items.count {
+                    return historyItemMenu(section.items[index])
+                }
+                index -= section.items.count
+            }
+            return nil
+        case .bookmarks:
+            guard flattenedRows.indices.contains(tableRow) else { return nil }
+            switch flattenedRows[tableRow].content {
+            case .bookmark(let item): return bookmarkItemMenu(item)
+            case .folder(let folder, _): return folderItemMenu(folder)
+            case .history: return nil
+            }
+        }
+    }
+
+    private func historyItemMenu(_ item: HistoryItem) -> NSMenu {
+        KeyboardContextMenu.historyMenu(
             copy: { historyStore.select(item, paste: false) },
             paste: {
                 historyStore.select(item, paste: true)
@@ -1220,8 +1128,8 @@ struct MainRootView: View {
         )
     }
 
-    private func showBookmarkMenu(_ item: BookmarkItem) {
-        KeyboardContextMenu.popBookmark(
+    private func bookmarkItemMenu(_ item: BookmarkItem) -> NSMenu {
+        KeyboardContextMenu.bookmarkMenu(
             copy: { historyStore.selectBookmark(item, paste: false) },
             paste: {
                 historyStore.selectBookmark(item, paste: true)
@@ -1236,6 +1144,26 @@ struct MainRootView: View {
             moveToNewFolder: { beginNewFolder(assigningBookmark: item) },
             remove: { historyStore.deleteBookmark(item) }
         )
+    }
+
+    private func folderItemMenu(_ folder: BookmarkFolder) -> NSMenu {
+        KeyboardContextMenu.folderMenu(
+            collapsed: isCollapsed(folder),
+            toggle: { toggleFolder(folder) },
+            rename: { beginRename(folder) },
+            delete: {
+                historyStore.deleteFolder(folder)
+                appState.collapsedFolderIDs.remove(folder.id)
+            }
+        )
+    }
+
+    private func showHistoryMenu(_ item: HistoryItem) {
+        KeyboardContextMenu.pop(historyItemMenu(item))
+    }
+
+    private func showBookmarkMenu(_ item: BookmarkItem) {
+        KeyboardContextMenu.pop(bookmarkItemMenu(item))
     }
 
     private func showBookmarkFolderMenu(for item: BookmarkItem) {
@@ -1298,14 +1226,6 @@ struct MainRootView: View {
         folderNameDraft = ""
     }
 
-    private func appName(for bundleId: String?) -> String {
-        guard let bundleId, bundleId != "unknown" else { return "Unknown" }
-        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
-            return FileManager.default.displayName(atPath: url.path)
-        }
-        return bundleId
-    }
-
     private func presentActionFeedback() {
         guard let action = historyStore.lastAction else { return }
         toastHideTask?.cancel()
@@ -1348,12 +1268,6 @@ private struct PaletteKeycap: View {
             in: RoundedRectangle(cornerRadius: 5, style: .continuous)
         )
     }
-}
-
-private struct HistoryDaySection: Identifiable {
-    let id: String
-    let title: String
-    let items: [HistoryItem]
 }
 
 private struct TimeFilterPopover: View {
@@ -1533,35 +1447,224 @@ private struct TimeFilterPopover: View {
     }
 }
 
-private struct PaletteBookmarkSection: Identifiable {
-    let id: String
-    let title: String
-    let folder: BookmarkFolder?
-    let items: [BookmarkItem]
+/// Value key driving the palette list's `.animation`/`onChange`. Compared per
+/// body evaluation — the old code diffed a fresh 1000-entry array of UUID
+/// strings instead.
+private struct RowSetKey: Equatable {
+    let version: Int
+    let collapsed: Set<UUID>
 }
 
-private enum PaletteRow: Identifiable {
-    case history(HistoryItem)
-    case bookmark(BookmarkItem)
-    case folder(BookmarkFolder, count: Int)
+// MARK: - Selection-isolated palette rows
+//
+// The palette body must never read `appState.paletteSelection`: one read makes
+// the whole `ForEach` rebuild on every click (~1,600 row constructions ≈
+// 110ms). Each row subscribes to its own `PaletteRowSelection` instead — a
+// selection move invalidates only the two rows that changed.
 
-    var id: String {
-        switch self {
-        case .history(let item): "h-\(item.id.uuidString)"
-        case .bookmark(let item): "b-\(item.id.uuidString)"
-        case .folder(let folder, _): "f-\(folder.id.uuidString)"
+/// History row — reads its own selection state, applies `keyboardListRow`
+/// internally. Clicks are handled by the table-level monitor
+/// (`TableContextMenuInstaller`), so no gestures/contentShape live here.
+private struct PaletteHistoryRow: View {
+    let item: HistoryItem
+    let sel: PaletteRowSelection
+    let recentlyActed: Bool
+
+    var body: some View {
+        let selected = sel.isSelected
+        HistoryRowView(
+            item: item,
+            emphasized: selected && sel.isActive,
+            recentlyActed: recentlyActed
+        )
+        .equatable()
+        .id(PaletteRow.historyID(item.id))
+        .keyboardListRow(selected: selected, listActive: sel.isActive)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct PaletteBookmarkRow: View {
+    let item: BookmarkItem
+    let showFolderName: Bool
+    let sel: PaletteRowSelection
+
+    var body: some View {
+        let selected = sel.isSelected
+        BookmarkRowView(
+            item: item,
+            emphasized: selected && sel.isActive,
+            folderName: showFolderName ? item.folder?.name : nil
+        )
+        .equatable()
+        .id(PaletteRow.bookmarkID(item.id))
+        .keyboardListRow(selected: selected, listActive: sel.isActive)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct PaletteFolderRow: View {
+    let folder: BookmarkFolder
+    let count: Int
+    let collapsed: Bool
+    let sel: PaletteRowSelection
+
+    var body: some View {
+        let emphasized = sel.isSelected && sel.isActive
+        HStack(spacing: 10) {
+            Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                .font(.caption.weight(.semibold))
+                .frame(width: 18)
+            Image(systemName: "folder.fill")
+                .font(.body)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(folder.name)
+                    .lineLimit(1)
+                Text(count == 1 ? "1 item" : "\(count) items")
+                    .font(.caption)
+                    .foregroundStyle(emphasized ? Color.white.opacity(0.75) : Color.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(emphasized ? Color.white : Color.primary)
+        .padding(.vertical, 2)
+        .id(PaletteRow.folderID(folder.id))
+        .keyboardListRow(selected: sel.isSelected, listActive: sel.isActive)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Preview pane — owns its `paletteSelection` reads so selection changes
+/// rebuild only this small subtree, not the palette.
+private struct PalettePreviewPane: View {
+    let appState: AppState
+    let historyStore: HistoryStore
+    let isCollapsed: (BookmarkFolder) -> Bool
+    let onEditHistory: (HistoryItem) -> Void
+    let onEditBookmark: (BookmarkItem) -> Void
+    let onNewFolder: (HistoryItem) -> Void
+    let onMoveBookmark: (BookmarkItem) -> Void
+
+    var body: some View {
+        #if DEBUG
+        let _ = DebugTools.clickMark("pane-eval")
+        #endif
+        paneContent
+    }
+
+    @ViewBuilder
+    private var paneContent: some View {
+        switch appState.paletteSelection {
+        case .history(let id):
+            if let item = historyStore.itemsByID[id] {
+                ClipboardDetailPane(
+                    item: item,
+                    onEdit: { onEditHistory(item) },
+                    onNewFolder: { onNewFolder(item) }
+                )
+            } else {
+                ContentUnavailableView("Select an item", systemImage: "doc.on.clipboard")
+            }
+        case .bookmark(let id):
+            if let item = historyStore.bookmarkItemsByID[id] {
+                BookmarkDetailPane(
+                    item: item,
+                    onEdit: { onEditBookmark(item) },
+                    onMoveFolder: { onMoveBookmark(item) }
+                )
+            } else {
+                ContentUnavailableView("Select an item", systemImage: "doc.on.clipboard")
+            }
+        case .folder(let id):
+            if let folder = historyStore.foldersByID[id] {
+                let count = historyStore.paletteBookmarkSections
+                    .first { $0.folder?.id == folder.id }?.items.count ?? 0
+                ContentUnavailableView(
+                    folder.name,
+                    systemImage: "folder.fill",
+                    description: Text(isCollapsed(folder)
+                        ? "\(count == 1 ? "1 item" : "\(count) items") · Return to expand"
+                        : "\(count == 1 ? "1 item" : "\(count) items") · ↓ to browse · Return to collapse")
+                )
+            } else {
+                ContentUnavailableView("Select an item", systemImage: "doc.on.clipboard")
+            }
+        case nil:
+            ContentUnavailableView("Select an item", systemImage: "doc.on.clipboard")
+        }
+    }
+}
+
+/// Footer action capsule ("Paste"/"Copy to Clipboard" + "Actions ⌘K") — owns
+/// its `paletteSelection` reads; the outer palette body stays selection-free.
+private struct PaletteActionCapsule: View {
+    let appState: AppState
+    let historyStore: HistoryStore
+    let pasteAutomatically: Bool
+    let isCollapsed: (BookmarkFolder) -> Bool
+    let onPrimary: () -> Void
+    let onActions: () -> Void
+
+    private var selectedItem: Bool {
+        switch appState.paletteSelection {
+        case .history(let id): historyStore.itemsByID[id] != nil
+        case .bookmark(let id): historyStore.bookmarkItemsByID[id] != nil
+        default: false
         }
     }
 
-    var selection: PaletteSelection {
-        switch self {
-        case .history(let item): .history(item.id)
-        case .bookmark(let item): .bookmark(item.id)
-        case .folder(let folder, _): .folder(folder.id)
+    private var primaryActionTitle: String? {
+        if case .folder(let id) = appState.paletteSelection,
+           let folder = historyStore.foldersByID[id] {
+            return isCollapsed(folder) ? "Expand" : "Collapse"
         }
+        if selectedItem {
+            return pasteAutomatically ? "Paste" : "Copy to Clipboard"
+        }
+        return nil
     }
 
-    static func historyID(_ id: UUID) -> String {
-        "h-\(id.uuidString)"
+    var body: some View {
+        if primaryActionTitle != nil || selectedItem {
+            HStack(spacing: 0) {
+                if let primaryActionTitle {
+                    Button(action: onPrimary) {
+                        HStack(spacing: 6) {
+                            Text(primaryActionTitle)
+                            PaletteKeycap(systemImage: "return")
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                    .pointingHandCursor()
+                    .disabled(appState.paletteSelection == nil)
+                }
+
+                if selectedItem {
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.12))
+                        .frame(width: 1, height: 16)
+                        .padding(.horizontal, 12)
+
+                    Button(action: onActions) {
+                        HStack(spacing: 6) {
+                            Text("Actions")
+                            PaletteKeycap(text: "⌘")
+                            PaletteKeycap(text: "K")
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                    .pointingHandCursor()
+                }
+            }
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(.primary.opacity(0.9))
+            .padding(.horizontal, LiquidGlassMetrics.pillPaddingH)
+            .padding(.vertical, LiquidGlassMetrics.pillPaddingV)
+            .contentShape(Capsule())
+            .liquidGlass(.interactive, in: Capsule(), fallback: Color.primary.opacity(0.10))
+        }
     }
 }

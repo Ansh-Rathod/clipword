@@ -157,4 +157,6 @@ extension Defaults.Keys {
     static let didBackfillCategories = Key<Bool>("didBackfillCategories", default: false)
     /// HTML copies of a URL used to be stored as styled text; one-shot reclass.
     static let didReclassifyHTMLLinks = Key<Bool>("didReclassifyHTMLLinks", default: false)
+    /// Legacy rows hashed in chunks; flipped when no unhashed rows remain.
+    static let didBackfillContentHashes = Key<Bool>("didBackfillContentHashes", default: false)
 }
