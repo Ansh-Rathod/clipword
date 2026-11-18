@@ -9,6 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  cupertino_icons: ^1.0.8
   super_sliver_list: ^0.4.1
   cupertino_native_better: ^2.7.4
 
@@ -18,4 +19,4 @@ dev_dependencies:
     sdk: flutter
 
 flutter:
-  uses-material-design: false
+  uses-material-design: true

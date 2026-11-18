@@ -12,7 +12,7 @@ class ClipwordController extends ChangeNotifier {
   ClipSnapshot snapshot = ClipSnapshot(const {});
   String windowMode = 'hidden';
   bool listFocused = false;
-  String? overlay; // edit | folder | time | none
+  String? overlay; // edit | folder | none
   String? editKind;
   String? editId;
   String editText = '';
@@ -38,14 +38,17 @@ class ClipwordController extends ChangeNotifier {
   bool menuTracking = false;
   double historyScrollOffset = 0;
   double bookmarksScrollOffset = 0;
+  bool holdScrollUpdates = false;
 
   Selection? get selection => _localSelection ?? snapshot.selection;
   bool get hasMore => snapshot.source == 'history' && _historyItems.length < itemCount;
+  bool get dialogOpen => overlay == 'edit' || overlay == 'folder';
 
   double get listScrollOffset =>
       snapshot.source == 'bookmarks' ? bookmarksScrollOffset : historyScrollOffset;
 
   void setListScrollOffset(double offset) {
+    if (holdScrollUpdates) return;
     if (snapshot.source == 'bookmarks') {
       bookmarksScrollOffset = offset;
     } else {
@@ -61,6 +64,9 @@ class ClipwordController extends ChangeNotifier {
     });
     channel.windowModes.listen((mode) {
       windowMode = mode;
+      if (mode == 'hidden') {
+        overlay = null;
+      }
       notifyListeners();
     });
     channel.menuTracking.listen((tracking) {
@@ -107,8 +113,14 @@ class ClipwordController extends ChangeNotifier {
   }
 
   void _applySnapshot(ClipSnapshot value) {
+    if (snapshot.source != value.source) {
+      _localSelection = null;
+    }
     snapshot = value;
     windowMode = value.windowMode;
+    if (windowMode == 'hidden') {
+      overlay = null;
+    }
     if (_localSelection != null &&
         value.selection?.kind == _localSelection!.kind &&
         value.selection?.id == _localSelection!.id) {
@@ -226,6 +238,26 @@ class ClipwordController extends ChangeNotifier {
       }
     }
     itemCount = page.itemCount;
+  }
+
+  Future<void> reloadSelectedItem() async {
+    _detailTimer?.cancel();
+    _loadedDetailKey = null;
+    detail = null;
+    preview = null;
+    notifyListeners();
+    final selection = this.selection;
+    if (selection == null || selection.kind == 'folder') return;
+    final key = '${selection.kind}:${selection.id}';
+    await _loadDetail(++_detailGen, key);
+    final loaded = detail;
+    if (loaded == null || selection.kind != 'history') return;
+    for (var i = 0; i < _historyItems.length; i++) {
+      if (_historyItems[i].id != selection.id) continue;
+      _historyItems[i] = HistoryRow({..._historyItems[i].json, ...loaded});
+      notifyListeners();
+      return;
+    }
   }
 
   void _scheduleDetail() {
@@ -387,10 +419,11 @@ class ClipwordController extends ChangeNotifier {
     return entries.indexWhere((entry) => entry.kind == row.kind && entry.id == row.id);
   }
 
-  Future<void> activatePrimary({bool option = false, bool shift = false}) async {
+  Future<void> activatePrimary({bool secondary = false, bool shift = false}) async {
     final selection = this.selection;
     if (selection == null) return;
     if (selection.kind == 'folder') {
+      if (secondary) return;
       final ids = {...snapshot.collapsedFolderIDs};
       if (ids.contains(selection.id)) {
         ids.remove(selection.id);
@@ -400,7 +433,55 @@ class ClipwordController extends ChangeNotifier {
       await channel.setCollapsedFolders(ids);
       return;
     }
-    await channel.activate(paste: option || snapshot.prefs.pasteAutomatically, withoutFormatting: shift);
+    final enterPastes = snapshot.prefs.pasteAutomatically;
+    final paste = secondary ? !enterPastes : enterPastes;
+    await channel.activate(paste: paste, withoutFormatting: shift);
+  }
+
+  Selection? get _itemSelection {
+    final current = selection;
+    if (current == null || current.kind == 'folder') return null;
+    return current;
+  }
+
+  Future<void> copySelection() async {
+    if (_itemSelection == null) return;
+    await channel.activate(paste: false);
+  }
+
+  Future<void> editSelection() async {
+    final current = _itemSelection;
+    if (current == null || dialogOpen) return;
+    editKind = current.kind;
+    editId = current.id;
+    final loaded = await channel.itemDetail(current.kind, current.id);
+    editText = loaded?['plainText'] as String? ?? '';
+    overlay = 'edit';
+    notifyListeners();
+  }
+
+  Future<void> deleteSelection() async {
+    final current = selection;
+    if (current == null) return;
+    await channel.delete(kind: current.kind, id: current.id);
+  }
+
+  Future<void> toggleBookmarkSelection() async {
+    final current = selection;
+    if (current?.kind != 'history') return;
+    await channel.toggleBookmark(current!.id);
+  }
+
+  Future<void> togglePinSelection() async {
+    final current = selection;
+    if (current?.kind != 'history') return;
+    await channel.togglePin(current!.id);
+  }
+
+  Future<void> addSelectionToStack() async {
+    final current = selection;
+    if (current?.kind != 'history') return;
+    await channel.addToStack(current!.id);
   }
 
   void selectEntry(String kind, String id) {

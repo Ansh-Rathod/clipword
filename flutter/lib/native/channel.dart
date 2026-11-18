@@ -130,10 +130,17 @@ class ClipwordChannel {
   Future<void> deleteFolder(String id) =>
       _methods.invokeMethod('deleteFolder', {'id': id});
 
-  Future<void> showItemMenu({String? kind, String? id}) =>
+  Future<void> showItemMenu({
+    String? kind,
+    String? id,
+    double? x,
+    double? y,
+  }) =>
       _methods.invokeMethod('showItemMenu', {
         if (kind != null) 'kind': kind,
         if (id != null) 'id': id,
+        if (x != null) 'x': x,
+        if (y != null) 'y': y,
       });
 
   Future<void> showFilterMenu() => _methods.invokeMethod('showFilterMenu');

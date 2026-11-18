@@ -33,7 +33,18 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     private var windowMode = "hidden"
     private var paletteSource = "history"
     private var collapsedFolderIDs: Set<UUID> = []
-    private var selection: [String: String]?
+    private var historySelection: [String: String]?
+    private var bookmarksSelection: [String: String]?
+    private var selection: [String: String]? {
+        get { paletteSource == "bookmarks" ? bookmarksSelection : historySelection }
+        set {
+            if paletteSource == "bookmarks" {
+                bookmarksSelection = newValue
+            } else {
+                historySelection = newValue
+            }
+        }
+    }
     private var suppressFocusLossHide = false
     private var lastLeftClick = Date.distantPast
     private var pasteStackMonitor: Any?
@@ -183,6 +194,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     private func configureWindow(_ window: NSWindow) {
         window.delegate = self
         window.isReleasedWhenClosed = false
+        window.isRestorable = false
         window.hidesOnDeactivate = false
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         applyPaletteChrome(window)
@@ -527,6 +539,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
             result(nil)
         case "setSource":
             paletteSource = args["source"] as? String ?? "history"
+            pruneSelection()
             emitSnapshot()
             result(nil)
         case "select":
@@ -688,11 +701,11 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         if kind == "history", let item = historyItem(store, id) {
             store.select(item, paste: paste, withoutFormatting: withoutFormatting)
             emitSnapshot()
-            if paste || Defaults[.pasteAutomatically] { hidePalette() }
+            if paste { hidePalette() }
         } else if kind == "bookmark", let item = bookmarkItem(store, id) {
             store.selectBookmark(item, paste: paste, withoutFormatting: withoutFormatting)
             emitSnapshot()
-            if paste || Defaults[.pasteAutomatically] { hidePalette() }
+            if paste { hidePalette() }
         }
     }
 
@@ -725,13 +738,19 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         let kind = args["kind"] as? String ?? selection?["kind"] ?? ""
         let id = args["id"] as? String ?? selection?["id"]
         let folders = store.folders.map { (id: $0.id, name: $0.name) }
+        let origin: NSPoint?
+        if let x = args["x"] as? Double, let y = args["y"] as? Double {
+            origin = NSPoint(x: x, y: y)
+        } else {
+            origin = nil
+        }
         if kind == "history", let item = historyItem(store, id) {
             let currentFolder = store.folder(forHistoryItem: item)?.id
-            popHistoryMenu(item: item, store: store, folders: folders, currentFolderID: currentFolder)
+            popHistoryMenu(item: item, store: store, folders: folders, currentFolderID: currentFolder, at: origin)
         } else if kind == "bookmark", let item = bookmarkItem(store, id) {
-            popBookmarkMenu(item: item, store: store, folders: folders)
+            popBookmarkMenu(item: item, store: store, folders: folders, at: origin)
         } else if kind == "folder", let uuid = id.flatMap(UUID.init(uuidString:)), let folder = store.folder(id: uuid) {
-            popFolderMenu(folder: folder, store: store)
+            popFolderMenu(folder: folder, store: store, at: origin)
         }
     }
 
@@ -739,9 +758,10 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         item: HistoryItem,
         store: HistoryStore,
         folders: [(id: UUID, name: String)],
-        currentFolderID: UUID?
+        currentFolderID: UUID?,
+        at origin: NSPoint?
     ) {
-        popMenu { add, separator, submenu in
+        popMenu(at: origin) { add, separator, submenu in
             add("Copy", "c", .command) { store.select(item, paste: false); self.emitSnapshot() }
             add("Paste", "", []) {
                 store.select(item, paste: true)
@@ -780,8 +800,13 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         }
     }
 
-    private func popBookmarkMenu(item: BookmarkItem, store: HistoryStore, folders: [(id: UUID, name: String)]) {
-        popMenu { add, separator, submenu in
+    private func popBookmarkMenu(
+        item: BookmarkItem,
+        store: HistoryStore,
+        folders: [(id: UUID, name: String)],
+        at origin: NSPoint?
+    ) {
+        popMenu(at: origin) { add, separator, submenu in
             add("Copy", "c", .command) { store.selectBookmark(item, paste: false) }
             add("Paste", "", []) {
                 store.selectBookmark(item, paste: true)
@@ -816,9 +841,9 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         }
     }
 
-    private func popFolderMenu(folder: BookmarkFolder, store: HistoryStore) {
+    private func popFolderMenu(folder: BookmarkFolder, store: HistoryStore, at origin: NSPoint?) {
         let collapsed = collapsedFolderIDs.contains(folder.id)
-        popMenu { add, separator, _ in
+        popMenu(at: origin) { add, separator, _ in
             add(collapsed ? "Expand" : "Collapse", "", []) {
                 if self.collapsedFolderIDs.contains(folder.id) {
                     self.collapsedFolderIDs.remove(folder.id)
@@ -841,14 +866,33 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
 
     private func showFilterMenu(store: HistoryStore) {
         popMenu { add, separator, submenu in
-            if store.activeCategory != nil || store.activeAppBundleId != nil {
+            if store.activeCategory != nil || store.activeAppBundleId != nil || store.timeFilter.isActive {
                 add("Clear Filters", "", []) {
                     store.activeCategory = nil
                     store.activeAppBundleId = nil
+                    store.timeFilter = .any
                     store.applyFilters(using: self.searchService)
                     self.emitSnapshot()
                 }
                 separator()
+            }
+            submenu("When") { addItem, sep in
+                let options: [(String, HistoryTimeFilter)] = [
+                    ("Any time", .any),
+                    ("Today", .today),
+                    ("Yesterday", .yesterday),
+                    ("Last 7 days", .last7Days),
+                    ("This month", .thisMonth),
+                ]
+                for (index, option) in options.enumerated() {
+                    if index == 1 { sep() }
+                    let selected = store.timeFilter == option.1
+                    addItem(selected ? "✓ \(option.0)" : option.0, "", []) {
+                        store.timeFilter = option.1
+                        store.applyFilters(using: self.searchService)
+                        self.emitSnapshot()
+                    }
+                }
             }
             submenu("Type") { addItem, sep in
                 addItem(store.activeCategory == nil ? "✓ All Types" : "All Types", "", []) {
@@ -901,6 +945,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     }
 
     private func popMenu(
+        at origin: NSPoint? = nil,
         builder: (
             @escaping (String, String, NSEvent.ModifierFlags, @escaping () -> Void) -> Void,
             @escaping () -> Void,
@@ -941,9 +986,13 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
             menu.addItem(item)
         }
         builder(add, separator, submenu)
-        let point = NSEvent.mouseLocation
         setMenuTracking(true)
-        menu.popUp(positioning: nil, at: point, in: nil)
+        if let origin, let view = flutterWindow?.contentViewController?.view ?? flutterWindow?.contentView {
+            let point = NSPoint(x: origin.x, y: view.bounds.height - origin.y)
+            menu.popUp(positioning: nil, at: point, in: view)
+        } else {
+            menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        }
         setMenuTracking(false)
     }
 
@@ -994,7 +1043,26 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     // MARK: Snapshot
 
     func emitSnapshot() {
+        pruneSelection()
         events?(["type": "snapshot", "payload": snapshotDict()])
+    }
+
+    private func pruneSelection() {
+        guard let store = historyStore, let current = selection else { return }
+        let kind = current["kind"]
+        let id = current["id"]
+        let valid: Bool
+        switch kind {
+        case "history":
+            valid = historyItem(store, id) != nil
+        case "bookmark":
+            valid = bookmarkItem(store, id) != nil
+        case "folder":
+            valid = id.flatMap(UUID.init(uuidString:)).flatMap { store.folder(id: $0) } != nil
+        default:
+            valid = false
+        }
+        if !valid { selection = nil }
     }
 
     private func persistCollapsedFolders() {

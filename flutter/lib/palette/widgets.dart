@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:cupertino_native_better/cupertino_native_better.dart';
+import 'package:flutter/material.dart' show IconData, Icons;
 import 'package:flutter/widgets.dart';
 
 import '../native/channel.dart';
@@ -107,12 +108,14 @@ class _AppGlyphState extends State<AppGlyph> {
 class GlassIconButton extends StatelessWidget {
   const GlassIconButton({
     super.key,
-    required this.icon,
+    this.icon,
+    this.iconData,
     required this.onTap,
     required this.palette,
   });
 
-  final String icon;
+  final String? icon;
+  final IconData? iconData;
   final VoidCallback onTap;
   final ClipPalette palette;
 
@@ -131,7 +134,9 @@ class GlassIconButton extends StatelessWidget {
             width: ClipTokens.iconButtonSize,
             height: ClipTokens.iconButtonSize,
             child: Center(
-              child: SymbolIcon(icon, size: ClipTokens.iconFont, color: palette.label),
+              child: iconData != null
+                  ? Icon(iconData, size: ClipTokens.iconFont, color: palette.label)
+                  : SymbolIcon(icon!, size: ClipTokens.iconFont, color: palette.label),
             ),
           ),
         ),
@@ -185,7 +190,13 @@ class FilterChipButton extends StatelessWidget {
                   style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: color),
                 ),
                 const SizedBox(width: 4),
-                SymbolIcon('chevron.down', size: 8, color: emphasized ? ClipTokens.accent.withValues(alpha: 0.8) : palette.secondary),
+                Icon(
+                  Icons.keyboard_arrow_down,
+                  size: 14,
+                  color: emphasized
+                      ? ClipTokens.accent.withValues(alpha: 0.8)
+                      : palette.secondary,
+                ),
               ],
             ),
           ),
@@ -196,9 +207,10 @@ class FilterChipButton extends StatelessWidget {
 }
 
 class Keycap extends StatelessWidget {
-  const Keycap({super.key, this.text, this.icon, required this.palette});
+  const Keycap({super.key, this.text, this.icon, this.iconData, required this.palette});
   final String? text;
   final String? icon;
+  final IconData? iconData;
   final ClipPalette palette;
 
   @override
@@ -213,16 +225,18 @@ class Keycap extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 4),
           child: Center(
-            child: icon != null
-                ? SymbolIcon(icon!, size: 11, color: palette.secondary)
-                : Text(
-                    text ?? '',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: palette.secondary,
-                    ),
-                  ),
+            child: iconData != null
+                ? Icon(iconData, size: 12, color: palette.secondary)
+                : icon != null
+                    ? SymbolIcon(icon!, size: 11, color: palette.secondary)
+                    : Text(
+                        text ?? '',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: palette.secondary,
+                        ),
+                      ),
           ),
         ),
       ),

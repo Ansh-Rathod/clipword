@@ -427,8 +427,7 @@ public final class HistoryStore {
         item.lastCopiedAt = .now
         item.copyCount += 1
         recordEvent(.copied, on: item)
-        let shouldPaste = paste || Defaults[.pasteAutomatically]
-        if shouldPaste {
+        if paste {
             item.pasteCount += 1
             item.lastPastedAt = .now
             recordEvent(.pasted, on: item)
@@ -629,7 +628,7 @@ public final class HistoryStore {
         guard let snapshot = PasteboardSnapshot.decode(from: item.contentData) else { return }
         let strip = withoutFormatting || Defaults[.pasteWithoutFormatting]
         PasteService.copyToClipboard(snapshot: snapshot, withoutFormatting: strip)
-        if paste || Defaults[.pasteAutomatically] {
+        if paste {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 PasteService.paste()
             }

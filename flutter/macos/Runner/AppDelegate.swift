@@ -14,6 +14,8 @@ class AppDelegate: FlutterAppDelegate {
     override func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         super.applicationDidFinishLaunching(notification)
+        mainFlutterWindow?.orderOut(nil)
+        ClipwordHost.shared.hidePalette()
     }
 
     override func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

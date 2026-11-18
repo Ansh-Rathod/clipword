@@ -1,3 +1,5 @@
+import 'package:flutter/cupertino.dart' show CupertinoIcons;
+import 'package:flutter/material.dart' show Icons;
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:super_sliver_list/super_sliver_list.dart';
@@ -8,7 +10,11 @@ import '../theme/tokens.dart';
 import 'widgets.dart';
 
 class PalettePage extends StatefulWidget {
-  const PalettePage({super.key, required this.controller, required this.palette});
+  const PalettePage({
+    super.key,
+    required this.controller,
+    required this.palette,
+  });
   final ClipwordController controller;
   final ClipPalette palette;
 
@@ -22,8 +28,10 @@ class _PalettePageState extends State<PalettePage> {
   late final FocusNode _pageFocus;
   final _listController = ListController();
   final _scrollController = ScrollController();
+  final _selectedRowKey = GlobalKey();
   String _windowMode = '';
   String _listSource = '';
+  String? _overlay;
   bool _restoringScroll = false;
 
   ClipwordController get c => widget.controller;
@@ -37,6 +45,7 @@ class _PalettePageState extends State<PalettePage> {
     _pageFocus = FocusNode(onKeyEvent: _onKeyEvent);
     _windowMode = c.windowMode;
     _listSource = c.snapshot.source;
+    _overlay = c.overlay;
     c.addListener(_onController);
     _focusSearch();
   }
@@ -45,7 +54,7 @@ class _PalettePageState extends State<PalettePage> {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
-    if (c.menuTracking) {
+    if (c.menuTracking || c.dialogOpen) {
       return KeyEventResult.ignored;
     }
     final key = event.logicalKey;
@@ -73,12 +82,53 @@ class _PalettePageState extends State<PalettePage> {
       _moveToEnd();
       return KeyEventResult.handled;
     }
-    if ((key == LogicalKeyboardKey.slash || key == LogicalKeyboardKey.numpadDivide) &&
+    if ((key == LogicalKeyboardKey.slash ||
+            key == LogicalKeyboardKey.numpadDivide) &&
         HardwareKeyboard.instance.isMetaPressed) {
       _focusSearch();
       return KeyEventResult.handled;
     }
+    if (_handleItemShortcut(key)) {
+      return KeyEventResult.handled;
+    }
     return KeyEventResult.ignored;
+  }
+
+  bool _handleItemShortcut(LogicalKeyboardKey key) {
+    if (c.dialogOpen || c.menuTracking) return false;
+    final meta = HardwareKeyboard.instance.isMetaPressed;
+    final alt = HardwareKeyboard.instance.isAltPressed;
+    final shift = HardwareKeyboard.instance.isShiftPressed;
+    if (meta && !alt) {
+      if (key == LogicalKeyboardKey.keyC && !shift) {
+        c.copySelection();
+        return true;
+      }
+      if (key == LogicalKeyboardKey.keyE) {
+        c.editSelection();
+        return true;
+      }
+      if (key == LogicalKeyboardKey.keyV && shift) {
+        c.addSelectionToStack();
+        return true;
+      }
+      if (key == LogicalKeyboardKey.backspace ||
+          key == LogicalKeyboardKey.delete) {
+        c.deleteSelection();
+        return true;
+      }
+    }
+    if (alt && !meta) {
+      if (key == LogicalKeyboardKey.keyB) {
+        c.toggleBookmarkSelection();
+        return true;
+      }
+      if (key == LogicalKeyboardKey.keyP) {
+        c.togglePinSelection();
+        return true;
+      }
+    }
+    return false;
   }
 
   Future<void> _moveToEnd() async {
@@ -108,7 +158,9 @@ class _PalettePageState extends State<PalettePage> {
 
   void _revealIndex(int index, int delta) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (index < 0 || !_listController.isAttached || !_scrollController.hasClients) {
+      if (index < 0 ||
+          !_listController.isAttached ||
+          !_scrollController.hasClients) {
         return;
       }
       final range = _listController.visibleRange;
@@ -133,6 +185,21 @@ class _PalettePageState extends State<PalettePage> {
     }
     _windowMode = c.windowMode;
     _syncListSource();
+    _searchFocus.canRequestFocus = !c.dialogOpen;
+    if (_overlay != null && c.overlay == null) {
+      _restoreFocusAfterOverlay();
+    } else if (c.dialogOpen) {
+      _searchFocus.unfocus();
+    }
+    _overlay = c.overlay;
+  }
+
+  void _restoreFocusAfterOverlay() {
+    if (c.listFocused) {
+      _focusList();
+    } else {
+      _focusSearch();
+    }
   }
 
   void _syncListSource() {
@@ -140,12 +207,30 @@ class _PalettePageState extends State<PalettePage> {
     if (source == _listSource) return;
     _saveScroll();
     _listSource = source;
+    c.holdScrollUpdates = true;
     _restoringScroll = true;
+    _restoreScrollSoon(attempts: 3);
+  }
+
+  void _restoreScrollSoon({required int attempts}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _restoreScroll();
+      if (attempts > 1) {
+        _restoreScrollSoon(attempts: attempts - 1);
+        return;
+      }
       _restoringScroll = false;
+      c.holdScrollUpdates = false;
     });
+  }
+
+  void _setSource(String source) {
+    if (source == c.snapshot.source) return;
+    _saveScroll();
+    c.holdScrollUpdates = true;
+    _restoringScroll = true;
+    c.channel.setSource(source);
   }
 
   void _saveScroll() {
@@ -171,7 +256,7 @@ class _PalettePageState extends State<PalettePage> {
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || c.windowMode == 'settings') return;
-      if (c.overlay == 'edit' || c.overlay == 'folder') return;
+      if (c.dialogOpen) return;
       _searchFocus.requestFocus();
     });
   }
@@ -183,7 +268,7 @@ class _PalettePageState extends State<PalettePage> {
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || c.windowMode == 'settings') return;
-      if (c.overlay == 'edit' || c.overlay == 'folder') return;
+      if (c.dialogOpen) return;
       _searchFocus.unfocus();
       _pageFocus.requestFocus();
     });
@@ -193,11 +278,28 @@ class _PalettePageState extends State<PalettePage> {
     _focusList();
   }
 
+  void _openItemActions({String? kind, String? id}) {
+    final box =
+        _selectedRowKey.currentContext?.findRenderObject() as RenderBox?;
+    Offset? origin;
+    if (box != null && box.hasSize && box.attached) {
+      origin = box.localToGlobal(Offset.zero);
+    }
+    c.channel.showItemMenu(
+      kind: kind,
+      id: id,
+      x: origin?.dx,
+      y: origin?.dy,
+    );
+  }
+
   void _syncSearch() {
     if (_search.text != c.snapshot.searchQuery) {
       _search.value = TextEditingValue(
         text: c.snapshot.searchQuery,
-        selection: TextSelection.collapsed(offset: c.snapshot.searchQuery.length),
+        selection: TextSelection.collapsed(
+          offset: c.snapshot.searchQuery.length,
+        ),
       );
     }
   }
@@ -218,69 +320,172 @@ class _PalettePageState extends State<PalettePage> {
   Widget build(BuildContext context) {
     final snap = c.snapshot;
     return Shortcuts(
-      shortcuts: const {
-        SingleActivator(LogicalKeyboardKey.arrowDown): _MoveIntent(1),
-        SingleActivator(LogicalKeyboardKey.arrowUp): _MoveIntent(-1),
-        SingleActivator(LogicalKeyboardKey.enter): _ActivateIntent(),
-        SingleActivator(LogicalKeyboardKey.escape): _EscapeIntent(),
-        SingleActivator(LogicalKeyboardKey.keyB, meta: true): _ToggleSourceIntent(),
-        SingleActivator(LogicalKeyboardKey.keyK, meta: true): _ActionsIntent(),
-        SingleActivator(LogicalKeyboardKey.comma, meta: true): _SettingsIntent(),
-        SingleActivator(LogicalKeyboardKey.keyW, meta: true): _CloseIntent(),
-        SingleActivator(LogicalKeyboardKey.keyQ, meta: true): _QuitIntent(),
-        SingleActivator(LogicalKeyboardKey.slash, meta: true): _FocusSearchIntent(),
+      shortcuts: {
+        if (!c.dialogOpen) ...{
+          const SingleActivator(LogicalKeyboardKey.arrowDown):
+              const _MoveIntent(1),
+          const SingleActivator(LogicalKeyboardKey.arrowUp):
+              const _MoveIntent(-1),
+          const SingleActivator(LogicalKeyboardKey.enter):
+              const _ActivateIntent(),
+          const SingleActivator(LogicalKeyboardKey.enter, meta: true):
+              const _ActivateIntent(secondary: true),
+          const SingleActivator(LogicalKeyboardKey.numpadEnter):
+              const _ActivateIntent(),
+          const SingleActivator(LogicalKeyboardKey.numpadEnter, meta: true):
+              const _ActivateIntent(secondary: true),
+          const SingleActivator(LogicalKeyboardKey.keyB, meta: true):
+              const _ToggleSourceIntent(),
+          const SingleActivator(LogicalKeyboardKey.keyK, meta: true):
+              const _ActionsIntent(),
+          const SingleActivator(LogicalKeyboardKey.slash, meta: true):
+              const _FocusSearchIntent(),
+          const SingleActivator(LogicalKeyboardKey.keyC, meta: true):
+              const _CopyItemIntent(),
+          const SingleActivator(LogicalKeyboardKey.keyE, meta: true):
+              const _EditItemIntent(),
+          const SingleActivator(
+            LogicalKeyboardKey.keyV,
+            meta: true,
+            shift: true,
+          ): const _PasteStackIntent(),
+          const SingleActivator(LogicalKeyboardKey.backspace, meta: true):
+              const _DeleteItemIntent(),
+          const SingleActivator(LogicalKeyboardKey.delete, meta: true):
+              const _DeleteItemIntent(),
+          const SingleActivator(LogicalKeyboardKey.keyB, alt: true):
+              const _BookmarkItemIntent(),
+          const SingleActivator(LogicalKeyboardKey.keyP, alt: true):
+              const _PinItemIntent(),
+        },
+        const SingleActivator(LogicalKeyboardKey.escape):
+            const _EscapeIntent(),
+        const SingleActivator(LogicalKeyboardKey.comma, meta: true):
+            const _SettingsIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyW, meta: true):
+            const _CloseIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyQ, meta: true):
+            const _QuitIntent(),
       },
       child: Actions(
         actions: {
-          _MoveIntent: CallbackAction<_MoveIntent>(onInvoke: (i) {
-            if (c.menuTracking) return null;
-            _move(i.delta);
-            return null;
-          }),
-          _ActivateIntent: CallbackAction<_ActivateIntent>(onInvoke: (_) {
-            if (c.menuTracking) return null;
-            c.activatePrimary();
-            return null;
-          }),
-          _EscapeIntent: CallbackAction<_EscapeIntent>(onInvoke: (_) {
-            if (c.menuTracking) return null;
-            if (snap.searchQuery.isNotEmpty) {
-              c.channel.setSearch('');
-            } else if (snap.timeFilter.isActive) {
-              c.channel.setTimeFilter(TimeFilter('any'));
-            } else {
+          _MoveIntent: CallbackAction<_MoveIntent>(
+            onInvoke: (i) {
+              if (c.menuTracking || c.dialogOpen) return null;
+              _move(i.delta);
+              return null;
+            },
+          ),
+          _ActivateIntent: CallbackAction<_ActivateIntent>(
+            onInvoke: (intent) {
+              if (c.menuTracking || c.dialogOpen) return null;
+              c.activatePrimary(secondary: intent.secondary);
+              return null;
+            },
+          ),
+          _EscapeIntent: CallbackAction<_EscapeIntent>(
+            onInvoke: (_) {
+              if (c.menuTracking) return null;
+              if (c.overlay != null) {
+                c.overlay = null;
+                c.refresh();
+                return null;
+              }
+              if (snap.searchQuery.isNotEmpty) {
+                c.channel.setSearch('');
+              } else if (snap.timeFilter.isActive) {
+                c.channel.setTimeFilter(TimeFilter('any'));
+              } else {
+                c.channel.hideWindow();
+              }
+              return null;
+            },
+          ),
+          _ToggleSourceIntent: CallbackAction<_ToggleSourceIntent>(
+            onInvoke: (_) {
+              if (c.dialogOpen) return null;
+              _setSource(snap.source == 'bookmarks' ? 'history' : 'bookmarks');
+              return null;
+            },
+          ),
+          _ActionsIntent: CallbackAction<_ActionsIntent>(
+            onInvoke: (_) {
+              if (c.dialogOpen) return null;
+              _openItemActions();
+              return null;
+            },
+          ),
+          _SettingsIntent: CallbackAction<_SettingsIntent>(
+            onInvoke: (_) {
+              c.channel.showSettings();
+              return null;
+            },
+          ),
+          _CloseIntent: CallbackAction<_CloseIntent>(
+            onInvoke: (_) {
               c.channel.hideWindow();
-            }
-            return null;
-          }),
-          _ToggleSourceIntent: CallbackAction<_ToggleSourceIntent>(onInvoke: (_) {
-            c.channel.setSource(snap.source == 'bookmarks' ? 'history' : 'bookmarks');
-            return null;
-          }),
-          _ActionsIntent: CallbackAction<_ActionsIntent>(onInvoke: (_) {
-            c.channel.showItemMenu();
-            return null;
-          }),
-          _SettingsIntent: CallbackAction<_SettingsIntent>(onInvoke: (_) {
-            c.channel.showSettings();
-            return null;
-          }),
-          _CloseIntent: CallbackAction<_CloseIntent>(onInvoke: (_) {
-            c.channel.hideWindow();
-            return null;
-          }),
-          _QuitIntent: CallbackAction<_QuitIntent>(onInvoke: (_) {
-            c.channel.quit();
-            return null;
-          }),
-          _FocusSearchIntent: CallbackAction<_FocusSearchIntent>(onInvoke: (_) {
-            _focusSearch();
-            return null;
-          }),
+              return null;
+            },
+          ),
+          _QuitIntent: CallbackAction<_QuitIntent>(
+            onInvoke: (_) {
+              c.channel.quit();
+              return null;
+            },
+          ),
+          _FocusSearchIntent: CallbackAction<_FocusSearchIntent>(
+            onInvoke: (_) {
+              if (c.dialogOpen) return null;
+              _focusSearch();
+              return null;
+            },
+          ),
+          _CopyItemIntent: CallbackAction<_CopyItemIntent>(
+            onInvoke: (_) {
+              if (c.dialogOpen) return null;
+              c.copySelection();
+              return null;
+            },
+          ),
+          _EditItemIntent: CallbackAction<_EditItemIntent>(
+            onInvoke: (_) {
+              if (c.dialogOpen) return null;
+              c.editSelection();
+              return null;
+            },
+          ),
+          _PasteStackIntent: CallbackAction<_PasteStackIntent>(
+            onInvoke: (_) {
+              if (c.dialogOpen) return null;
+              c.addSelectionToStack();
+              return null;
+            },
+          ),
+          _DeleteItemIntent: CallbackAction<_DeleteItemIntent>(
+            onInvoke: (_) {
+              if (c.dialogOpen) return null;
+              c.deleteSelection();
+              return null;
+            },
+          ),
+          _BookmarkItemIntent: CallbackAction<_BookmarkItemIntent>(
+            onInvoke: (_) {
+              if (c.dialogOpen) return null;
+              c.toggleBookmarkSelection();
+              return null;
+            },
+          ),
+          _PinItemIntent: CallbackAction<_PinItemIntent>(
+            onInvoke: (_) {
+              if (c.dialogOpen) return null;
+              c.togglePinSelection();
+              return null;
+            },
+          ),
         },
         child: Focus(
           focusNode: _pageFocus,
-          autofocus: true,
+          autofocus: !c.dialogOpen,
           onKeyEvent: _onKeyEvent,
           child: DecoratedBox(
             decoration: BoxDecoration(
@@ -292,9 +497,15 @@ class _PalettePageState extends State<PalettePage> {
               child: Column(
                 children: [
                   _searchRow(snap),
-                  ColoredBox(color: p.divider, child: const SizedBox(height: 1, width: double.infinity)),
+                  ColoredBox(
+                    color: p.divider,
+                    child: const SizedBox(height: 1, width: double.infinity),
+                  ),
                   Expanded(child: _body(snap)),
-                  ColoredBox(color: p.divider, child: const SizedBox(height: 1, width: double.infinity)),
+                  ColoredBox(
+                    color: p.divider,
+                    child: const SizedBox(height: 1, width: double.infinity),
+                  ),
                   _footer(snap),
                 ],
               ),
@@ -313,12 +524,12 @@ class _PalettePageState extends State<PalettePage> {
         children: [
           if (bookmarks)
             GlassIconButton(
-              icon: 'chevron.left',
+              iconData: Icons.arrow_back_ios_new,
               palette: p,
-              onTap: () => c.channel.setSource('history'),
+              onTap: () => _setSource('history'),
             )
           else
-            SymbolIcon('magnifyingglass', size: 16, color: p.secondary),
+            Icon(CupertinoIcons.search, size: 18, color: p.secondary),
           const SizedBox(width: 10),
           Expanded(
             child: EditableText(
@@ -330,24 +541,13 @@ class _PalettePageState extends State<PalettePage> {
               onChanged: c.channel.setSearch,
             ),
           ),
-          if (!bookmarks) ...[
-            const SizedBox(width: 10),
-            FilterChipButton(
-              icon: 'calendar',
-              title: snap.timeFilter.chipTitle,
-              emphasized: snap.timeFilter.isActive,
-              palette: p,
-              onTap: () {
-                c.overlay = c.overlay == 'time' ? null : 'time';
-                c.refresh();
-              },
-            ),
-          ],
           const SizedBox(width: 10),
           FilterChipButton(
             icon: _filterIcon(snap),
             title: _filterTitle(snap),
-            emphasized: snap.category != null || snap.appBundleId != null,
+            emphasized: snap.category != null ||
+                snap.appBundleId != null ||
+                snap.timeFilter.isActive,
             palette: p,
             onTap: c.channel.showFilterMenu,
           ),
@@ -363,30 +563,39 @@ class _PalettePageState extends State<PalettePage> {
   }
 
   String _filterIcon(ClipSnapshot snap) {
-    if (snap.category != null) return categoryIcons[snap.category] ?? 'line.3.horizontal.decrease';
+    if (snap.category != null)
+      return categoryIcons[snap.category] ?? 'line.3.horizontal.decrease';
     if (snap.appBundleId != null) return 'app.badge';
+    if (snap.timeFilter.isActive) return 'calendar';
     return 'line.3.horizontal.decrease';
   }
 
   String _filterTitle(ClipSnapshot snap) {
+    final parts = <String>[];
+    if (snap.timeFilter.isActive) parts.add(snap.timeFilter.label);
     final type = categoryLabels[snap.category];
-    final app = snap.apps.where((a) => a.bundleId == snap.appBundleId).map((a) => a.name);
-    final appName = app.isEmpty ? null : app.first;
-    if (type == null && appName == null) return 'Filter';
-    if (type != null && appName == null) return type;
-    if (type == null && appName != null) return appName;
-    return '$type · $appName';
+    if (type != null) parts.add(type);
+    final app = snap.apps
+        .where((a) => a.bundleId == snap.appBundleId)
+        .map((a) => a.name);
+    if (app.isNotEmpty) parts.add(app.first);
+    if (parts.isEmpty) return 'Filter';
+    return parts.join(' · ');
   }
 
   Widget _body(ClipSnapshot snap) {
-    if (c.entries.where((e) => e.kind != 'section' && e.kind != 'empty').isEmpty &&
+    if (c.entries
+            .where((e) => e.kind != 'section' && e.kind != 'empty')
+            .isEmpty &&
         c.entries.where((e) => e.kind == 'folder').isEmpty &&
         snap.source == 'history' &&
         c.entries.isEmpty) {
       return _empty(snap);
     }
     if (snap.source == 'history' && c.itemCount == 0) return _empty(snap);
-    if (snap.source == 'bookmarks' && snap.bookmarks.isEmpty && snap.folders.isEmpty) {
+    if (snap.source == 'bookmarks' &&
+        snap.bookmarks.isEmpty &&
+        snap.folders.isEmpty) {
       return _empty(snap);
     }
     return Stack(
@@ -395,12 +604,11 @@ class _PalettePageState extends State<PalettePage> {
         Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            SizedBox(
-              width: ClipTokens.listIdeal,
-              child: _list(snap),
-            ),
+            SizedBox(width: ClipTokens.listIdeal, child: _list(snap)),
             ColoredBox(color: p.divider, child: const SizedBox(width: 1)),
-            Expanded(child: DetailPane(controller: c, palette: p)),
+            Expanded(
+              child: DetailPane(controller: c, palette: p),
+            ),
           ],
         ),
         if (c.toastKind != null)
@@ -408,20 +616,16 @@ class _PalettePageState extends State<PalettePage> {
             top: 14,
             left: 0,
             right: 0,
-            child: IgnorePointer(
-              child: Center(child: _toast(c.toastKind!)),
-            ),
-          ),
-        if (c.overlay == 'time')
-          Positioned(
-            top: 8,
-            right: 90,
-            child: TimeFilterCard(controller: c, palette: p),
+            child: IgnorePointer(child: Center(child: _toast(c.toastKind!))),
           ),
         if (c.overlay == 'edit')
-          Positioned.fill(child: EditSheet(controller: c, palette: p)),
+          Positioned.fill(
+            child: EditSheet(controller: c, palette: p),
+          ),
         if (c.overlay == 'folder')
-          Positioned.fill(child: FolderSheet(controller: c, palette: p)),
+          Positioned.fill(
+            child: FolderSheet(controller: c, palette: p),
+          ),
       ],
     );
   }
@@ -442,70 +646,88 @@ class _PalettePageState extends State<PalettePage> {
         behavior: HitTestBehavior.translucent,
         onPointerDown: (_) => _keepArrowKeys(),
         child: SuperListView.builder(
-        listController: _listController,
-        controller: _scrollController,
-        primary: false,
-        cacheExtent: 320,
-        itemCount: entries.length,
-        findChildIndexCallback: (key) {
-          if (key is! ValueKey<String>) return null;
-          final index = entries.indexWhere((entry) => '${entry.kind}:${entry.id}' == key.value);
-          return index < 0 ? null : index;
-        },
-        itemBuilder: (context, index) {
-          final entry = entries[index];
-          final key = ValueKey('${entry.kind}:${entry.id}');
-          if (entry.kind == 'section') {
-            return Padding(
-              key: key,
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
-              child: Text(
-                entry.title ?? '',
-                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: p.secondary),
-              ),
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          listController: _listController,
+          controller: _scrollController,
+          primary: false,
+          cacheExtent: 320,
+          itemCount: entries.length,
+          findChildIndexCallback: (key) {
+            if (key is! ValueKey<String>) return null;
+            final index = entries.indexWhere(
+              (entry) => '${entry.kind}:${entry.id}' == key.value,
             );
-          }
-          if (entry.kind == 'empty') {
-            return Padding(
-              key: key,
-              padding: const EdgeInsets.fromLTRB(36, 6, 16, 6),
-              child: Text('Empty folder', style: TextStyle(color: p.tertiary, fontSize: 13)),
-            );
-          }
-          final selected = c.selection?.kind == entry.kind && c.selection?.id == entry.id;
-          final emphasized = selected && c.listFocused;
-          Color? fill;
-          if (emphasized) {
-            fill = ClipTokens.accent;
-          } else if (selected) {
-            fill = p.selectedIdle;
-          }
-          return KeyedSubtree(
-            key: key,
-            child: MouseRegion(
-              cursor: SystemMouseCursors.click,
-              child: GestureDetector(
-                onTap: () {
-                  c.selectEntry(entry.kind, entry.id ?? '');
-                  _keepArrowKeys();
-                },
-                onDoubleTap: () => c.activatePrimary(),
-                onSecondaryTap: () => c.channel.showItemMenu(kind: entry.kind, id: entry.id),
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: fill,
-                    borderRadius: BorderRadius.circular(ClipTokens.rowRadius),
+            return index < 0 ? null : index;
+          },
+          itemBuilder: (context, index) {
+            final entry = entries[index];
+            final key = ValueKey('${entry.kind}:${entry.id}');
+            if (entry.kind == 'section') {
+              return Padding(
+                key: key,
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+                child: Text(
+                  entry.title ?? '',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: p.secondary,
                   ),
-                  child: Padding(
-                    padding: EdgeInsets.fromLTRB(entry.indented ? 20 : 8, 6, 10, 6),
-                    child: _row(entry, emphasized),
+                ),
+              );
+            }
+            if (entry.kind == 'empty') {
+              return Padding(
+                key: key,
+                padding: const EdgeInsets.fromLTRB(36, 6, 16, 6),
+                child: Text(
+                  'Empty folder',
+                  style: TextStyle(color: p.tertiary, fontSize: 13),
+                ),
+              );
+            }
+            final selected =
+                c.selection?.kind == entry.kind && c.selection?.id == entry.id;
+            final emphasized = selected && c.listFocused;
+            Color? fill;
+            if (emphasized) {
+              fill = ClipTokens.accent;
+            } else if (selected) {
+              fill = p.selectedIdle;
+            }
+            return KeyedSubtree(
+              key: key,
+              child: MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  key: selected ? _selectedRowKey : null,
+                  onTap: () {
+                    c.selectEntry(entry.kind, entry.id ?? '');
+                    _keepArrowKeys();
+                  },
+                  onDoubleTap: () => c.activatePrimary(),
+                  onSecondaryTap: () =>
+                      c.channel.showItemMenu(kind: entry.kind, id: entry.id),
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: fill,
+                      borderRadius: BorderRadius.circular(ClipTokens.rowRadius),
+                    ),
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        entry.indented ? 20 : 8,
+                        6,
+                        10,
+                        6,
+                      ),
+                      child: _row(entry, emphasized),
+                    ),
                   ),
                 ),
               ),
-            ),
-          );
-        },
-      ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -515,14 +737,29 @@ class _PalettePageState extends State<PalettePage> {
     if (entry.kind == 'folder') {
       return Row(
         children: [
-          SymbolIcon(entry.collapsed ? 'chevron.right' : 'chevron.down', size: 11, color: color),
+          Icon(
+            entry.collapsed ? Icons.chevron_right : Icons.keyboard_arrow_down,
+            size: 16,
+            color: color,
+          ),
           const SizedBox(width: 8),
           SymbolIcon('folder.fill', size: 14, color: color),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(entry.title ?? '', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: color)),
+            child: Text(
+              entry.title ?? '',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: color),
+            ),
           ),
-          Text('${entry.count} items', style: TextStyle(fontSize: 11, color: emphasized ? const Color(0xCCFFFFFF) : p.secondary)),
+          Text(
+            '${entry.count} items',
+            style: TextStyle(
+              fontSize: 11,
+              color: emphasized ? const Color(0xCCFFFFFF) : p.secondary,
+            ),
+          ),
         ],
       );
     }
@@ -537,17 +774,34 @@ class _PalettePageState extends State<PalettePage> {
             width: 3,
             height: 16,
             margin: const EdgeInsets.only(right: 6),
-            decoration: BoxDecoration(color: ClipTokens.accent, borderRadius: BorderRadius.circular(2)),
+            decoration: BoxDecoration(
+              color: ClipTokens.accent,
+              borderRadius: BorderRadius.circular(2),
+            ),
           ),
         SymbolIcon(icon, size: 14, color: color),
         const SizedBox(width: 10),
         Expanded(
-          child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: color)),
+          child: Text(
+            title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: color),
+          ),
         ),
-        if (bookmarked) SymbolIcon('bookmark.fill', size: 10, color: emphasized ? const Color(0xF2FFFFFF) : ClipTokens.bookmark),
+        if (bookmarked)
+          SymbolIcon(
+            'bookmark.fill',
+            size: 10,
+            color: emphasized ? const Color(0xF2FFFFFF) : ClipTokens.bookmark,
+          ),
         if (pinned) ...[
           const SizedBox(width: 4),
-          SymbolIcon('pin.fill', size: 10, color: emphasized ? const Color(0xF2FFFFFF) : ClipTokens.pin),
+          SymbolIcon(
+            'pin.fill',
+            size: 10,
+            color: emphasized ? const Color(0xF2FFFFFF) : ClipTokens.pin,
+          ),
         ],
       ],
     );
@@ -556,20 +810,30 @@ class _PalettePageState extends State<PalettePage> {
   Widget _footer(ClipSnapshot snap) {
     final selection = c.selection;
     String? primary;
+    String? secondary;
     if (selection?.kind == 'folder') {
       final collapsed = snap.collapsedFolderIDs.contains(selection!.id);
       primary = collapsed ? 'Expand' : 'Collapse';
     } else if (selection != null) {
-      primary = snap.prefs.pasteAutomatically ? 'Paste' : 'Copy to Clipboard';
+      if (snap.prefs.pasteAutomatically) {
+        primary = 'Paste';
+        secondary = 'Copy';
+      } else {
+        primary = 'Copy';
+        secondary = 'Paste';
+      }
     }
-    final showActions = selection?.kind == 'history' || selection?.kind == 'bookmark';
+    final showActions =
+        selection?.kind == 'history' || selection?.kind == 'bookmark';
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       child: Row(
         children: [
           FooterPill(
             palette: p,
-            onTap: () => c.channel.setSource(snap.source == 'bookmarks' ? 'history' : 'bookmarks'),
+            onTap: () => _setSource(
+              snap.source == 'bookmarks' ? 'history' : 'bookmarks',
+            ),
             child: Row(
               children: [
                 Text(snap.source == 'bookmarks' ? 'Recents' : 'Bookmarks'),
@@ -589,23 +853,53 @@ class _PalettePageState extends State<PalettePage> {
                 children: [
                   if (primary != null)
                     GestureDetector(
-                      onTap: c.activatePrimary,
+                      onTap: () => c.activatePrimary(),
                       child: Row(
                         children: [
                           Text(primary),
                           const SizedBox(width: 6),
-                          Keycap(icon: 'return', palette: p),
+                          Keycap(iconData: Icons.keyboard_return, palette: p),
                         ],
                       ),
                     ),
-                  if (primary != null && showActions)
+                  if (secondary != null) ...[
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: SizedBox(width: 1, height: 16, child: ColoredBox(color: p.label.withValues(alpha: 0.12))),
+                      child: SizedBox(
+                        width: 1,
+                        height: 16,
+                        child: ColoredBox(
+                          color: p.label.withValues(alpha: 0.12),
+                        ),
+                      ),
+                    ),
+                    GestureDetector(
+                      onTap: () => c.activatePrimary(secondary: true),
+                      child: Row(
+                        children: [
+                          Text(secondary),
+                          const SizedBox(width: 6),
+                          Keycap(text: '⌘', palette: p),
+                          const SizedBox(width: 2),
+                          Keycap(iconData: Icons.keyboard_return, palette: p),
+                        ],
+                      ),
+                    ),
+                  ],
+                  if ((primary != null || secondary != null) && showActions)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: SizedBox(
+                        width: 1,
+                        height: 16,
+                        child: ColoredBox(
+                          color: p.label.withValues(alpha: 0.12),
+                        ),
+                      ),
                     ),
                   if (showActions)
                     GestureDetector(
-                      onTap: () => c.channel.showItemMenu(),
+                      onTap: _openItemActions,
                       child: Row(
                         children: [
                           const Text('Actions'),
@@ -625,11 +919,17 @@ class _PalettePageState extends State<PalettePage> {
   }
 
   Widget _empty(ClipSnapshot snap) {
-    final filtering = snap.searchQuery.isNotEmpty || snap.category != null || snap.appBundleId != null || snap.timeFilter.isActive;
+    final filtering =
+        snap.searchQuery.isNotEmpty ||
+        snap.category != null ||
+        snap.appBundleId != null ||
+        snap.timeFilter.isActive;
     final title = snap.source == 'bookmarks'
         ? (filtering ? 'No bookmarks match' : 'No bookmarks yet')
         : (filtering ? 'No items match' : 'No clips yet');
-    final icon = filtering ? 'line.3.horizontal.decrease.circle' : (snap.source == 'bookmarks' ? 'bookmark' : 'doc.on.clipboard');
+    final icon = filtering
+        ? 'line.3.horizontal.decrease.circle'
+        : (snap.source == 'bookmarks' ? 'bookmark' : 'doc.on.clipboard');
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -672,7 +972,13 @@ class _PalettePageState extends State<PalettePage> {
       decoration: BoxDecoration(
         color: p.window,
         borderRadius: BorderRadius.circular(12),
-        boxShadow: const [BoxShadow(color: Color(0x33000000), blurRadius: 10, offset: Offset(0, 3))],
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x33000000),
+            blurRadius: 10,
+            offset: Offset(0, 3),
+          ),
+        ],
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -681,7 +987,10 @@ class _PalettePageState extends State<PalettePage> {
           children: [
             SymbolIcon(icon, size: 14, color: color),
             const SizedBox(width: 8),
-            Text(title, style: TextStyle(color: p.label, fontWeight: FontWeight.w500)),
+            Text(
+              title,
+              style: TextStyle(color: p.label, fontWeight: FontWeight.w500),
+            ),
           ],
         ),
       ),
@@ -690,7 +999,11 @@ class _PalettePageState extends State<PalettePage> {
 }
 
 class DetailPane extends StatelessWidget {
-  const DetailPane({super.key, required this.controller, required this.palette});
+  const DetailPane({
+    super.key,
+    required this.controller,
+    required this.palette,
+  });
   final ClipwordController controller;
   final ClipPalette palette;
 
@@ -715,25 +1028,28 @@ class DetailPane extends StatelessWidget {
           child: image is Uint8List
               ? SingleChildScrollView(child: Image.memory(image))
               : preview != null && preview['failed'] != true
-                  ? _linkPreview(preview, text)
-                  : SingleChildScrollView(
-                      padding: const EdgeInsets.all(20),
-                      child: Align(
-                        alignment: Alignment.topLeft,
-                        child: Text(
-                          text.isEmpty
-                              ? (detail?['title'] as String? ?? fallbackTitle)
-                              : text,
-                          style: TextStyle(
-                            fontFamily: 'Menlo',
-                            fontSize: 13,
-                            color: palette.label,
-                          ),
-                        ),
+              ? _linkPreview(preview, text)
+              : SingleChildScrollView(
+                  padding: const EdgeInsets.all(20),
+                  child: Align(
+                    alignment: Alignment.topLeft,
+                    child: Text(
+                      text.isEmpty
+                          ? (detail?['title'] as String? ?? fallbackTitle)
+                          : text,
+                      style: TextStyle(
+                        fontFamily: 'Menlo',
+                        fontSize: 13,
+                        color: palette.label,
                       ),
                     ),
+                  ),
+                ),
         ),
-        ColoredBox(color: palette.divider, child: const SizedBox(height: 1, width: double.infinity)),
+        ColoredBox(
+          color: palette.divider,
+          child: const SizedBox(height: 1, width: double.infinity),
+        ),
         Expanded(
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(20),
@@ -776,7 +1092,14 @@ class DetailPane extends StatelessWidget {
               ),
             ),
           const SizedBox(height: 10),
-          Text(title, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: palette.label)),
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: palette.label,
+            ),
+          ),
           if (detail != null) ...[
             const SizedBox(height: 6),
             Text(detail, style: TextStyle(color: palette.secondary)),
@@ -796,7 +1119,10 @@ class DetailPane extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Information', style: TextStyle(color: palette.secondary, fontSize: 13)),
+        Text(
+          'Information',
+          style: TextStyle(color: palette.secondary, fontSize: 13),
+        ),
         const SizedBox(height: 12),
         if (category != null)
           Padding(
@@ -804,7 +1130,13 @@ class DetailPane extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                SizedBox(width: 110, child: Text('Content type', style: TextStyle(color: palette.secondary))),
+                SizedBox(
+                  width: 110,
+                  child: Text(
+                    'Content type',
+                    style: TextStyle(color: palette.secondary),
+                  ),
+                ),
                 Expanded(
                   child: Text(
                     categoryLabels[category] ?? category,
@@ -825,7 +1157,10 @@ class DetailPane extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            SizedBox(width: 110, child: Text(label, style: TextStyle(color: palette.secondary))),
+            SizedBox(
+              width: 110,
+              child: Text(label, style: TextStyle(color: palette.secondary)),
+            ),
             Expanded(child: value),
           ],
         ),
@@ -836,7 +1171,10 @@ class DetailPane extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Information', style: TextStyle(color: palette.secondary, fontSize: 13)),
+        Text(
+          'Information',
+          style: TextStyle(color: palette.secondary, fontSize: 13),
+        ),
         const SizedBox(height: 12),
         row(
           'Source',
@@ -844,37 +1182,88 @@ class DetailPane extends StatelessWidget {
             children: [
               AppGlyph(detail['applicationBundleId'] as String?),
               const SizedBox(width: 6),
-              Text(detail['appName'] as String? ?? 'Unknown', style: TextStyle(color: palette.label)),
+              Text(
+                detail['appName'] as String? ?? 'Unknown',
+                style: TextStyle(color: palette.label),
+              ),
             ],
           ),
         ),
-        row('Content type', Text(categoryLabels[detail['category'] as String?] ?? (detail['contentType'] as String? ?? ''), style: TextStyle(color: palette.label))),
+        row(
+          'Content type',
+          Text(
+            categoryLabels[detail['category'] as String?] ??
+                (detail['contentType'] as String? ?? ''),
+            style: TextStyle(color: palette.label),
+          ),
+        ),
         if (detail['linkURL'] != null)
           row(
             'Address',
             GestureDetector(
-              onTap: () => controller.channel.openUrl(detail['linkURL'] as String),
-              child: Text(detail['linkURL'] as String, style: const TextStyle(color: ClipTokens.accent)),
+              onTap: () =>
+                  controller.channel.openUrl(detail['linkURL'] as String),
+              child: Text(
+                detail['linkURL'] as String,
+                style: const TextStyle(color: ClipTokens.accent),
+              ),
             ),
           ),
         if (detail['folderName'] != null)
-          row('Folder', Text(detail['folderName'] as String, style: TextStyle(color: palette.label))),
-        row('Characters', Text('${detail['charCount'] ?? 0}', style: TextStyle(color: palette.label))),
-        row('Words', Text('${detail['wordCount'] ?? 0}', style: TextStyle(color: palette.label))),
+          row(
+            'Folder',
+            Text(
+              detail['folderName'] as String,
+              style: TextStyle(color: palette.label),
+            ),
+          ),
+        row(
+          'Characters',
+          Text(
+            '${detail['charCount'] ?? 0}',
+            style: TextStyle(color: palette.label),
+          ),
+        ),
+        row(
+          'Words',
+          Text(
+            '${detail['wordCount'] ?? 0}',
+            style: TextStyle(color: palette.label),
+          ),
+        ),
         if (detail['copyCount'] != null)
-          row('Copies', Text('${detail['copyCount']}', style: TextStyle(color: palette.label))),
+          row(
+            'Copies',
+            Text(
+              '${detail['copyCount']}',
+              style: TextStyle(color: palette.label),
+            ),
+          ),
         if (detail['pasteCount'] != null)
-          row('Pastes', Text('${detail['pasteCount']}', style: TextStyle(color: palette.label))),
+          row(
+            'Pastes',
+            Text(
+              '${detail['pasteCount']}',
+              style: TextStyle(color: palette.label),
+            ),
+          ),
         if (events.isNotEmpty) ...[
           const SizedBox(height: 12),
-          Text('Activity', style: TextStyle(color: palette.secondary, fontSize: 13)),
+          Text(
+            'Activity',
+            style: TextStyle(color: palette.secondary, fontSize: 13),
+          ),
           const SizedBox(height: 8),
           for (final event in events.whereType<Map>())
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
               child: Row(
                 children: [
-                  SymbolIcon(event['kind'] == 'pasted' ? 'text.insert' : 'doc.on.doc', size: 12, color: palette.secondary),
+                  SymbolIcon(
+                    event['kind'] == 'pasted' ? 'text.insert' : 'doc.on.doc',
+                    size: 12,
+                    color: palette.secondary,
+                  ),
                   const SizedBox(width: 8),
                   Text(
                     event['kind'] == 'pasted' ? 'Pasted' : 'Copied',
@@ -885,62 +1274,6 @@ class DetailPane extends StatelessWidget {
             ),
         ],
       ],
-    );
-  }
-}
-
-class TimeFilterCard extends StatelessWidget {
-  const TimeFilterCard({super.key, required this.controller, required this.palette});
-  final ClipwordController controller;
-  final ClipPalette palette;
-
-  @override
-  Widget build(BuildContext context) {
-    const presets = [
-      ('any', 'Any time'),
-      ('today', 'Today'),
-      ('yesterday', 'Yesterday'),
-      ('last7Days', 'Last 7 days'),
-      ('thisMonth', 'This month'),
-    ];
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: palette.window,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: const [BoxShadow(color: Color(0x33000000), blurRadius: 16)],
-      ),
-      child: SizedBox(
-        width: 292,
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final preset in presets)
-                GestureDetector(
-                  onTap: () {
-                    controller.channel.setTimeFilter(TimeFilter(preset.$1));
-                    controller.overlay = null;
-                    controller.refresh();
-                  },
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: controller.snapshot.timeFilter.kind == preset.$1
-                          ? ClipTokens.accent.withValues(alpha: 0.16)
-                          : palette.chipFill,
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                      child: Text(preset.$2, style: TextStyle(color: palette.label, fontSize: 12)),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }
@@ -956,77 +1289,140 @@ class EditSheet extends StatefulWidget {
 
 class _EditSheetState extends State<EditSheet> {
   late final TextEditingController _text;
-  final _focus = FocusNode();
+  late final FocusNode _focus;
+  late final FocusScopeNode _scope;
+  bool _saving = false;
+  int _focusTries = 0;
 
   @override
   void initState() {
     super.initState();
     _text = TextEditingController(text: widget.controller.editText);
+    _focus = FocusNode(onKeyEvent: _onKey);
+    _scope = FocusScopeNode();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _focusField());
+  }
+
+  void _focusField() {
+    if (!mounted) return;
+    _scope.requestFocus(_focus);
+    _focus.requestFocus();
+    if (!_focus.hasFocus && _focusTries < 8) {
+      _focusTries += 1;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _focusField());
+      return;
+    }
+    _text.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: _text.text.length,
+    );
+  }
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    if (event.logicalKey == LogicalKeyboardKey.escape) {
+      _cancel();
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.enter ||
+        event.logicalKey == LogicalKeyboardKey.numpadEnter) {
+      if (HardwareKeyboard.instance.isShiftPressed) {
+        return KeyEventResult.ignored;
+      }
+      _save();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  void _cancel() {
+    widget.controller.overlay = null;
+    widget.controller.refresh();
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+    _saving = true;
+    await widget.controller.channel.editContent(
+      widget.controller.editKind ?? 'history',
+      widget.controller.editId ?? '',
+      _text.text,
+    );
+    if (!mounted) return;
+    widget.controller.overlay = null;
+    await widget.controller.reloadSelectedItem();
   }
 
   @override
   void dispose() {
     _text.dispose();
     _focus.dispose();
+    _scope.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final p = widget.palette;
-    return ColoredBox(
-      color: const Color(0x66000000),
-      child: Center(
-        child: DecoratedBox(
-          decoration: BoxDecoration(color: p.window, borderRadius: BorderRadius.circular(16)),
-          child: SizedBox(
-            width: 480,
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Edit Content', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: p.label)),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    height: 220,
-                    child: EditableText(
-                      controller: _text,
-                      focusNode: _focus,
-                      maxLines: null,
-                      style: TextStyle(fontFamily: 'Menlo', fontSize: 13, color: p.label),
-                      cursorColor: ClipTokens.accent,
-                      backgroundCursorColor: p.secondary,
+    return FocusScope(
+      node: _scope,
+      autofocus: true,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _cancel,
+        child: ColoredBox(
+          color: const Color(0x66000000),
+          child: Center(
+            child: GestureDetector(
+              onTap: () {},
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: p.window,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: SizedBox(
+                  width: 480,
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Edit Content',
+                          style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w600,
+                            color: p.label,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          height: 220,
+                          child: EditableText(
+                            controller: _text,
+                            focusNode: _focus,
+                            maxLines: null,
+                            style: TextStyle(
+                              fontFamily: 'Menlo',
+                              fontSize: 13,
+                              color: p.label,
+                            ),
+                            cursorColor: ClipTokens.accent,
+                            backgroundCursorColor: p.secondary,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        _DialogActions(
+                          palette: p,
+                          confirmLabel: 'Save',
+                          onCancel: _cancel,
+                          onConfirm: _save,
+                        ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 16),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      GestureDetector(
-                        onTap: () {
-                          widget.controller.overlay = null;
-                          widget.controller.refresh();
-                        },
-                        child: Text('Cancel', style: TextStyle(color: p.secondary)),
-                      ),
-                      const SizedBox(width: 16),
-                      GestureDetector(
-                        onTap: () async {
-                          await widget.controller.channel.editContent(
-                            widget.controller.editKind ?? 'history',
-                            widget.controller.editId ?? '',
-                            _text.text,
-                          );
-                          widget.controller.overlay = null;
-                          widget.controller.refresh();
-                        },
-                        child: const Text('Save', style: TextStyle(color: ClipTokens.accent, fontWeight: FontWeight.w600)),
-                      ),
-                    ],
-                  ),
-                ],
+                ),
               ),
             ),
           ),
@@ -1037,7 +1433,11 @@ class _EditSheetState extends State<EditSheet> {
 }
 
 class FolderSheet extends StatefulWidget {
-  const FolderSheet({super.key, required this.controller, required this.palette});
+  const FolderSheet({
+    super.key,
+    required this.controller,
+    required this.palette,
+  });
   final ClipwordController controller;
   final ClipPalette palette;
 
@@ -1047,18 +1447,80 @@ class FolderSheet extends StatefulWidget {
 
 class _FolderSheetState extends State<FolderSheet> {
   late final TextEditingController _text;
-  final _focus = FocusNode();
+  late final FocusNode _focus;
+  late final FocusScopeNode _scope;
+  bool _saving = false;
+  int _focusTries = 0;
 
   @override
   void initState() {
     super.initState();
     _text = TextEditingController(text: widget.controller.folderName);
+    _focus = FocusNode(onKeyEvent: _onKey);
+    _scope = FocusScopeNode();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _focusField());
+  }
+
+  void _focusField() {
+    if (!mounted) return;
+    _scope.requestFocus(_focus);
+    _focus.requestFocus();
+    if (!_focus.hasFocus && _focusTries < 8) {
+      _focusTries += 1;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _focusField());
+      return;
+    }
+    _text.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: _text.text.length,
+    );
+  }
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    if (event.logicalKey == LogicalKeyboardKey.escape) {
+      _cancel();
+      return KeyEventResult.handled;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.enter ||
+        event.logicalKey == LogicalKeyboardKey.numpadEnter) {
+      _save();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  void _cancel() {
+    widget.controller.overlay = null;
+    widget.controller.refresh();
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+    _saving = true;
+    final rename = widget.controller.renameFolderId != null;
+    if (rename) {
+      await widget.controller.channel.renameFolder(
+        widget.controller.renameFolderId!,
+        _text.text,
+      );
+    } else {
+      await widget.controller.channel.createFolder(
+        name: _text.text,
+        historyId: widget.controller.folderHistoryId,
+        bookmarkId: widget.controller.folderBookmarkId,
+      );
+    }
+    if (!mounted) return;
+    widget.controller.overlay = null;
+    widget.controller.refresh();
   }
 
   @override
   void dispose() {
     _text.dispose();
     _focus.dispose();
+    _scope.dispose();
     super.dispose();
   }
 
@@ -1066,64 +1528,141 @@ class _FolderSheetState extends State<FolderSheet> {
   Widget build(BuildContext context) {
     final p = widget.palette;
     final rename = widget.controller.renameFolderId != null;
-    return ColoredBox(
-      color: const Color(0x66000000),
-      child: Center(
-        child: DecoratedBox(
-          decoration: BoxDecoration(color: p.window, borderRadius: BorderRadius.circular(14)),
-          child: SizedBox(
-            width: 360,
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(rename ? 'Rename Folder' : 'New Folder', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: p.label)),
-                  const SizedBox(height: 12),
-                  EditableText(
-                    controller: _text,
-                    focusNode: _focus,
-                    style: TextStyle(fontSize: 15, color: p.label),
-                    cursorColor: ClipTokens.accent,
-                    backgroundCursorColor: p.secondary,
+    return FocusScope(
+      node: _scope,
+      autofocus: true,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _cancel,
+        child: ColoredBox(
+          color: const Color(0x66000000),
+          child: Center(
+            child: GestureDetector(
+              onTap: () {},
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: p.window,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: SizedBox(
+                  width: 360,
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          rename ? 'Rename Folder' : 'New Folder',
+                          style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w600,
+                            color: p.label,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        EditableText(
+                          controller: _text,
+                          focusNode: _focus,
+                          style: TextStyle(fontSize: 15, color: p.label),
+                          cursorColor: ClipTokens.accent,
+                          backgroundCursorColor: p.secondary,
+                        ),
+                        const SizedBox(height: 16),
+                        _DialogActions(
+                          palette: p,
+                          confirmLabel: rename ? 'Rename' : 'Create',
+                          onCancel: _cancel,
+                          onConfirm: _save,
+                        ),
+                      ],
+                    ),
                   ),
-                  const SizedBox(height: 16),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      GestureDetector(
-                        onTap: () {
-                          widget.controller.overlay = null;
-                          widget.controller.refresh();
-                        },
-                        child: Text('Cancel', style: TextStyle(color: p.secondary)),
-                      ),
-                      const SizedBox(width: 16),
-                      GestureDetector(
-                        onTap: () async {
-                          if (rename) {
-                            await widget.controller.channel.renameFolder(widget.controller.renameFolderId!, _text.text);
-                          } else {
-                            await widget.controller.channel.createFolder(
-                              name: _text.text,
-                              historyId: widget.controller.folderHistoryId,
-                              bookmarkId: widget.controller.folderBookmarkId,
-                            );
-                          }
-                          widget.controller.overlay = null;
-                          widget.controller.refresh();
-                        },
-                        child: Text(rename ? 'Rename' : 'Create', style: const TextStyle(color: ClipTokens.accent, fontWeight: FontWeight.w600)),
-                      ),
-                    ],
-                  ),
-                ],
+                ),
               ),
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+class _DialogActions extends StatelessWidget {
+  const _DialogActions({
+    required this.palette,
+    required this.confirmLabel,
+    required this.onCancel,
+    required this.onConfirm,
+  });
+
+  final ClipPalette palette;
+  final String confirmLabel;
+  final VoidCallback onCancel;
+  final VoidCallback onConfirm;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.end,
+      children: [
+        MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: GestureDetector(
+            onTap: onCancel,
+            child: Row(
+              children: [
+                Text('Cancel', style: TextStyle(color: palette.secondary)),
+                const SizedBox(width: 6),
+                Keycap(text: 'esc', palette: palette),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(width: 16),
+        MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: GestureDetector(
+            onTap: onConfirm,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: ClipTokens.accent,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                child: Row(
+                  children: [
+                    Text(
+                      confirmLabel,
+                      style: const TextStyle(
+                        color: Color(0xFFFFFFFF),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: const Color(0x33FFFFFF),
+                        borderRadius:
+                            BorderRadius.circular(ClipTokens.keycapRadius),
+                      ),
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                        child: Icon(
+                          Icons.keyboard_return,
+                          size: 12,
+                          color: Color(0xFFFFFFFF),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -1134,7 +1673,8 @@ class _MoveIntent extends Intent {
 }
 
 class _ActivateIntent extends Intent {
-  const _ActivateIntent();
+  const _ActivateIntent({this.secondary = false});
+  final bool secondary;
 }
 
 class _EscapeIntent extends Intent {
@@ -1163,4 +1703,28 @@ class _FocusSearchIntent extends Intent {
 
 class _QuitIntent extends Intent {
   const _QuitIntent();
+}
+
+class _CopyItemIntent extends Intent {
+  const _CopyItemIntent();
+}
+
+class _EditItemIntent extends Intent {
+  const _EditItemIntent();
+}
+
+class _PasteStackIntent extends Intent {
+  const _PasteStackIntent();
+}
+
+class _DeleteItemIntent extends Intent {
+  const _DeleteItemIntent();
+}
+
+class _BookmarkItemIntent extends Intent {
+  const _BookmarkItemIntent();
+}
+
+class _PinItemIntent extends Intent {
+  const _PinItemIntent();
 }

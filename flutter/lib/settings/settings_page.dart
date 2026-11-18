@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart' show Icons;
 import 'package:flutter/widgets.dart';
 
 import '../app/controller.dart';
@@ -222,9 +223,24 @@ class GeneralPane extends StatelessWidget {
             _PrefRow(label: 'Open Clipword', palette: palette, child: Text('⇧⌘C', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
             _PrefRow(label: 'Search clips and bookmarks', palette: palette, child: Text('Type', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
             _PrefRow(label: 'Move through the list', palette: palette, child: Text('↑ ↓', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
-            _PrefRow(label: 'Expand folder, or paste', palette: palette, child: Text('Return', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
+            _PrefRow(
+              label: prefs.pasteAutomatically ? 'Paste selected item' : 'Copy selected item',
+              palette: palette,
+              child: Text('Return', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo')),
+            ),
+            _PrefRow(
+              label: prefs.pasteAutomatically ? 'Copy selected item' : 'Paste selected item',
+              palette: palette,
+              child: Text('⌘Return', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo')),
+            ),
             _PrefRow(label: 'Toggle bookmarks / recent', palette: palette, child: Text('⌘B', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
             _PrefRow(label: 'Item actions menu', palette: palette, child: Text('⌘K', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
+            _PrefRow(label: 'Copy selected item', palette: palette, child: Text('⌘C', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
+            _PrefRow(label: 'Edit selected item', palette: palette, child: Text('⌘E', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
+            _PrefRow(label: 'Add to paste stack', palette: palette, child: Text('⇧⌘V', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
+            _PrefRow(label: 'Bookmark selected item', palette: palette, child: Text('⌥B', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
+            _PrefRow(label: 'Pin selected item', palette: palette, child: Text('⌥P', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
+            _PrefRow(label: 'Delete selected item', palette: palette, child: Text('⌘⌫', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
           ],
         ),
         _Section(
@@ -255,11 +271,23 @@ class GeneralPane extends StatelessWidget {
           palette: palette,
           children: [
             _PrefRow(
-              label: 'Paste automatically',
+              label: 'Return key',
+              caption: '⌘Return does the other action',
               palette: palette,
-              child: NativeToggle(
-                value: prefs.pasteAutomatically,
-                onChanged: (v) => controller.channel.prefsSet({'pasteAutomatically': v}),
+              child: _MenuValue(
+                value: prefs.pasteAutomatically ? 'Paste' : 'Copy to clipboard',
+                onTap: () async {
+                  final picked = await controller.channel.showChoices(
+                    ['Paste', 'Copy to clipboard'],
+                    current: prefs.pasteAutomatically ? 'Paste' : 'Copy to clipboard',
+                  );
+                  if (picked != null) {
+                    await controller.channel.prefsSet({
+                      'pasteAutomatically': picked == 'Paste',
+                    });
+                  }
+                },
+                palette: palette,
               ),
             ),
             _PrefRow(
@@ -611,7 +639,7 @@ class _MenuValue extends StatelessWidget {
           children: [
             Text(value, style: TextStyle(color: palette.label)),
             const SizedBox(width: 6),
-            SymbolIcon('chevron.up.chevron.down', size: 10, color: palette.secondary),
+            Icon(Icons.unfold_more, size: 14, color: palette.secondary),
           ],
         ),
       ),
