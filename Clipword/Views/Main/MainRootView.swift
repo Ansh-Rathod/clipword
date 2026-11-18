@@ -36,6 +36,13 @@ struct MainRootView: View {
     @State private var showingTimeFilter = false
     @FocusState private var searchFieldActive: Bool
     @FocusState private var backButtonFocused: Bool
+    /// Search-row chrome chips — "when" (time filter) and "filter" (type/app).
+    /// Reached by Tab from the search field; ←/→ move between them, ↓ drops
+    /// into the list, Return/Space opens the chip's menu.
+    private enum ChipFocus: Hashable { case when, filter }
+    @FocusState private var chipFocus: ChipFocus?
+    @State private var whenAnchor = MenuAnchorBox()
+    @State private var filterAnchor = MenuAnchorBox()
     @Default(.pasteAutomatically) private var pasteAutomatically
 
     private var selectedHistoryItem: HistoryItem? {
@@ -207,6 +214,17 @@ struct MainRootView: View {
                 appState.isSearchFocused = false
             }
         }
+        .onChange(of: chipFocus) { _, focused in
+            #if DEBUG
+            DebugTools.chipFocusDesc = focused.map { "\($0)" } ?? "nil"
+            #endif
+            if focused != nil {
+                listFocused = false
+                backButtonFocused = false
+                searchFieldActive = false
+                appState.isSearchFocused = false
+            }
+        }
         .onChange(of: historyStore.searchQuery) { _, _ in
             historyStore.applyFilters(using: searchService)
             selectFirstRow(preferExisting: false)
@@ -252,6 +270,18 @@ struct MainRootView: View {
             presentActionFeedback()
         }
         .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+            if chipFocus != nil {
+                // onKeyPress resolves outside-in: this root handler sees the
+                // key before the chip's own handlers, so chips are steered
+                // from here. ↓ leaves the chrome row into the list; ↑ backs
+                // out to the search field.
+                if press.key == .downArrow {
+                    chipFocus = nil
+                    return moveSelection(1)
+                }
+                focusSearch()
+                return .handled
+            }
             if press.modifiers.contains(.command) {
                 return jumpSelection(press.key == .upArrow ? -1 : 1)
             }
@@ -313,6 +343,7 @@ struct MainRootView: View {
                 .simultaneousGesture(TapGesture().onEnded {
                     listFocused = false
                     backButtonFocused = false
+                    chipFocus = nil
                 })
                 .onKeyPress(keys: [.upArrow, .downArrow]) { press in
                     if press.modifiers.contains(.command) {
@@ -322,6 +353,10 @@ struct MainRootView: View {
                 }
                 .onKeyPress(.return) { handleReturn() }
                 .onKeyPress(.escape) { handleEscape() }
+                .onKeyPress(keys: [.tab]) { press in
+                    chipFocus = press.modifiers.contains(.shift) ? .filter : .when
+                    return .handled
+                }
 
             if appState.paletteSource == .history {
                 timeFilterChip
@@ -408,6 +443,15 @@ struct MainRootView: View {
                 .pointingHandCursor()
             }
 
+            // Discoverability: the when/filter chips are keyboard-reachable —
+            // say so, otherwise users never find the path.
+            HStack(spacing: 5) {
+                Text("Filters")
+                PaletteKeycap(text: "⇥")
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(.secondary)
+
             Spacer(minLength: 8)
 
             PaletteActionCapsule(
@@ -443,7 +487,7 @@ struct MainRootView: View {
 
     private var timeFilterChip: some View {
         Button {
-            showingTimeFilter.toggle()
+            popWhenMenu()
         } label: {
             filterChip(
                 icon: "calendar",
@@ -459,53 +503,32 @@ struct MainRootView: View {
             )
         }
         .fixedSize()
-        .focusable(false)
+        .focusable()
+        .focused($chipFocus, equals: .when)
+        .modifier(ArrowFocusRingModifier(forced: chipFocus == .when))
+        .background {
+            PersistentMenuAnchorProbe(box: whenAnchor)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
+        }
+        // Return/↓ are handled at the root (outside-in dispatch); Space and
+        // ←/→ have no ancestor handler, so the chip's own handlers see them.
+        .onKeyPress(.space) { popWhenMenu(); return .handled }
+        .onKeyPress(.rightArrow) { chipFocus = .filter; return .handled }
+        .onKeyPress(.leftArrow) { focusSearch(); return .handled }
+        .onKeyPress(keys: [.tab]) { press in
+            if press.modifiers.contains(.shift) { focusSearch() } else { chipFocus = .filter }
+            return .handled
+        }
         .pointingHandCursor()
         .accessibilityLabel("Jump to day")
+        .help("Tab from search · Return opens")
     }
 
     private var combinedFilter: some View {
         let hasFilter = historyStore.activeCategory != nil || historyStore.activeAppBundleId != nil
-        return Menu {
-            if hasFilter {
-                Button("Clear Filters") {
-                    historyStore.activeCategory = nil
-                    historyStore.activeAppBundleId = nil
-                }
-                Divider()
-            }
-            Section("Type") {
-                filterMenuButton(
-                    title: "All Types",
-                    selected: historyStore.activeCategory == nil
-                ) {
-                    historyStore.activeCategory = nil
-                }
-                ForEach(ClipboardCategory.allCases) { category in
-                    filterMenuButton(
-                        title: category.label,
-                        selected: historyStore.activeCategory == category
-                    ) {
-                        historyStore.activeCategory = category
-                    }
-                }
-            }
-            Section("App") {
-                filterMenuButton(
-                    title: "All Apps",
-                    selected: historyStore.activeAppBundleId == nil
-                ) {
-                    historyStore.activeAppBundleId = nil
-                }
-                ForEach(filterApps) { app in
-                    filterMenuButton(
-                        title: "\(app.name) (\(app.count))",
-                        selected: historyStore.activeAppBundleId == app.bundleId
-                    ) {
-                        historyStore.activeAppBundleId = app.bundleId
-                    }
-                }
-            }
+        return Button {
+            popCombinedFilterMenu()
         } label: {
             filterChip(
                 icon: combinedFilterIcon,
@@ -513,19 +536,54 @@ struct MainRootView: View {
                 emphasized: hasFilter
             )
         }
-        .menuStyle(.borderlessButton)
+        .buttonStyle(.plain)
         .fixedSize()
-        .focusable(false)
+        .focusable()
+        .focused($chipFocus, equals: .filter)
+        .modifier(ArrowFocusRingModifier(forced: chipFocus == .filter))
+        .background {
+            PersistentMenuAnchorProbe(box: filterAnchor)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
+        }
+        .onKeyPress(.space) { popCombinedFilterMenu(); return .handled }
+        .onKeyPress(.leftArrow) { chipFocus = .when; return .handled }
+        .onKeyPress(.rightArrow) { return .handled }
+        .onKeyPress(keys: [.tab]) { press in
+            if press.modifiers.contains(.shift) { chipFocus = .when } else { focusSearch() }
+            return .handled
+        }
+        .pointingHandCursor()
+        .accessibilityLabel("Filter by type or app")
+        .help("Tab from search · Return opens")
     }
 
-    private func filterMenuButton(title: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            if selected {
-                Label(title, systemImage: "checkmark")
-            } else {
-                Text(title)
-            }
-        }
+    private func popWhenMenu() {
+        #if DEBUG
+        if DebugTools.navTestActive { DebugTools.navLog("[key] popWhenMenu") }
+        #endif
+        KeyboardContextMenu.popTimeFilter(
+            current: historyStore.timeFilter,
+            select: { historyStore.timeFilter = $0 },
+            pickCustom: { showingTimeFilter = true },
+            relativeTo: whenAnchor.view
+        )
+    }
+
+    private func popCombinedFilterMenu() {
+        KeyboardContextMenu.popCombinedFilter(
+            hasFilter: historyStore.activeCategory != nil || historyStore.activeAppBundleId != nil,
+            currentCategory: historyStore.activeCategory,
+            apps: filterApps,
+            currentApp: historyStore.activeAppBundleId,
+            clear: {
+                historyStore.activeCategory = nil
+                historyStore.activeAppBundleId = nil
+            },
+            selectCategory: { historyStore.activeCategory = $0 },
+            selectApp: { historyStore.activeAppBundleId = $0 },
+            relativeTo: filterAnchor.view
+        )
     }
 
     private var combinedFilterIcon: String {
@@ -749,6 +807,7 @@ struct MainRootView: View {
         historyStore.reloadFolders()
         listFocused = false
         backButtonFocused = false
+        chipFocus = nil
         restoreSelectionIfNeeded()
         focusSearch()
     }
@@ -764,6 +823,7 @@ struct MainRootView: View {
 
     private func focusSearch() {
         DispatchQueue.main.async {
+            chipFocus = nil
             backButtonFocused = false
             searchFieldActive = true
             appState.isSearchFocused = true
@@ -946,6 +1006,14 @@ struct MainRootView: View {
     }
 
     private func handleReturn() -> KeyPress.Result {
+        #if DEBUG
+        if DebugTools.navTestActive { DebugTools.navLog("[key] handleReturn chip=\(DebugTools.chipFocusDesc)") }
+        #endif
+        switch chipFocus {
+        case .when: popWhenMenu(); return .handled
+        case .filter: popCombinedFilterMenu(); return .handled
+        case nil: break
+        }
         if backButtonFocused {
             goBackToRecents()
             return .handled
@@ -980,6 +1048,11 @@ struct MainRootView: View {
     }
 
     private func handleEscape() -> KeyPress.Result {
+        if chipFocus != nil {
+            chipFocus = nil
+            focusSearch()
+            return .handled
+        }
         if !historyStore.searchQuery.isEmpty {
             historyStore.searchQuery = ""
             historyStore.applyFilters(using: searchService)

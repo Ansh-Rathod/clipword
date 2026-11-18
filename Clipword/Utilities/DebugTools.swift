@@ -157,6 +157,11 @@ enum DebugTools {
     /// Set while `navTest` runs — gates per-press `[mv]` logging so normal
     /// DEBUG sessions don't grow /tmp/navtest-app.log on every arrow key.
     static var navTestActive = false
+    /// Mirror of MainRootView.chipFocus for --nav-test assertions.
+    static var chipFocusDesc = "nil"
+    /// Retains the last table context menu so tests can dismiss it without
+    /// CGEvent injection (which needs Accessibility permission).
+    static weak var lastPoppedMenu: NSMenu?
 
     // MARK: - Insert-path benchmarking (--insert-bench)
 
@@ -313,6 +318,84 @@ enum DebugTools {
                     }
                 }
             }
+            // Chip phase: Tab reaches the "when" chip, ←/→ traverse chips,
+            // Return pops a native menu anchored to the chip, and the test
+            // selects "Today" via performActionForItem — driving the menu
+            // programmatically (no CGEvent → no Accessibility dependency).
+            // Serialized on a .common-modes Timer: while a menu tracks modally
+            // the main queue may starve, but common-mode timers keep firing.
+            @MainActor func chipLog(_ tag: String) {
+                let fr = NSApp.keyWindow?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+                navLog("[chip] \(tag) chip=\(chipFocusDesc) fr=\(fr) isSearch=\(appState.isSearchFocused)")
+            }
+            // A Timer can't re-enter while its handler runs, and a send that
+            // pops a menu blocks inside popUpContextMenu — so each menu-opening
+            // send is the LAST item on its timer, arming the next before it
+            // blocks. Script boundaries: before the when-menu, inside it +
+            // up to the filter-menu send, then everything after.
+            var timers: [Timer] = []
+            var scripts: [[@MainActor () -> Void]] = [
+                [
+                    { sendArrow(48, "\t") },
+                    { chipLog("Tab → expect when,") },
+                    { sendArrow(124, "\u{F703}") },
+                    { chipLog("→ → expect filter,") },
+                    { sendArrow(123, "\u{F702}") },
+                    { chipLog("← → expect when,") },
+                    {
+                        timers[1].fireDate = .now + 0.3
+                        sendArrow(36, "\r")
+                    },
+                ],
+                [
+                    { chipLog("Return → menuOpen=\(KeyboardContextMenu.currentMenu != nil)") },
+                    {
+                        // Items: 0 Any time · 1 Today · 2 Yesterday · 3 Last 7 · 4 This month.
+                        KeyboardContextMenu.currentMenu?.performActionForItem(at: 1)
+                        KeyboardContextMenu.dismissCurrentMenu()
+                    },
+                    {
+                        let pass = store.timeFilter == .today
+                        navLog("[chip] pick Today → expect today actual=\(store.timeFilter) \(pass ? "PASS" : "FAIL") chip=\(chipFocusDesc)")
+                    },
+                    { sendArrow(48, "\t") },
+                    { sendArrow(124, "\u{F703}") },
+                    { chipLog("pre-filter ") },
+                    {
+                        timers[2].fireDate = .now + 0.3
+                        sendArrow(36, "\r")
+                    },
+                ],
+                [
+                    { chipLog("filter Return → menuOpen=\(KeyboardContextMenu.currentMenu != nil)") },
+                    { KeyboardContextMenu.dismissCurrentMenu() },
+                    { chipLog("Esc → menu=\(KeyboardContextMenu.currentMenu != nil)") },
+                    { sendArrow(125, "\u{F701}") },
+                    {
+                        chipLog("↓ ")
+                        logSel("post-chip down")
+                    },
+                    {
+                        if store.timeFilter != .any { store.timeFilter = .any }
+                        navLog("[chip] done")
+                    },
+                ],
+            ]
+            // Timers arm only after the context-menu sendEvent returns — firing
+            // chip keys while that menu still tracks steals its dismissal and
+            // nests a second modal popUpContextMenu, which fails instantly.
+            for i in scripts.indices {
+                let timer = Timer(fire: .distantFuture, interval: 0.4, repeats: true) { t in
+                    let hasMore = MainActor.assumeIsolated {
+                        if scripts[i].isEmpty { return false }
+                        scripts[i].removeFirst()()
+                        return true
+                    }
+                    if !hasMore { t.invalidate() }
+                }
+                timers.append(timer)
+                RunLoop.main.add(timer, forMode: .common)
+            }
             // Right-click a visible row to exercise the table-level NSMenu
             // (TableContextMenuInstaller replaces per-row .contextMenu).
             // The builder logs "[menu] row=… items=…" when it runs.
@@ -334,14 +417,18 @@ enum DebugTools {
                     navLog("[menu] failed to create event")
                     return
                 }
-                // popUpContextMenu tracks modally until dismissed — post a real
-                // Escape through the HID tap so sendEvent returns.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                    CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: true)?
-                        .post(tap: .cghidEventTap)
+                // popUpContextMenu tracks modally until dismissed — cancel it
+                // via a common-modes Timer (fires inside the tracking loop;
+                // no CGEvent → no Accessibility permission needed).
+                let dismissTimer = Timer(fire: .now + 0.8, interval: 0, repeats: false) { _ in
+                    MainActor.assumeIsolated {
+                        lastPoppedMenu?.cancelTracking()
+                    }
                 }
+                RunLoop.main.add(dismissTimer, forMode: .common)
                 NSApp.sendEvent(ev)
                 navLog("[menu] sendEvent returned")
+                timers[0].fireDate = .now + 0.8
             }
         }
     }
@@ -679,6 +766,20 @@ enum DebugTools {
         t += step; after(t) { sendKey(125, "\u{F701}") } // ↓ → saveImages
         t += step; after(t) { sendKey(36, "\r") } // Return → toggle saveImages
         t += step; after(t) { logState("storage Return → expect saveImages flipped") }
+        // ↓×4 to the "History size" picker row, → activates → popChoices logs
+        // its anchor — proves menus attach to the focused row, not top-left.
+        for _ in 0..<4 {
+            t += step; after(t) { sendKey(125, "\u{F701}") }
+        }
+        t += step; after(t) { sendKey(124, "\u{F703}") } // → activate picker
+        t += step; after(t) { logState("storage → on picker → menu popped (check [pop] line)") }
+        // The popped menu runs a modal tracking loop that starves the main
+        // queue — only a .common-modes Timer fires inside it.
+        let dismissTimer = Timer(timeInterval: t + step, repeats: false) { _ in
+            KeyboardContextMenu.dismissCurrentMenu()
+            slog("[settings] menu dismissed via cancelTracking")
+        }
+        RunLoop.main.add(dismissTimer, forMode: .common)
         t += step; after(t) { sendKey(53, "\u{1B}") }
         t += step; after(t) { sendKey(125, "\u{F701}") } // storage→ignore
         t += step; after(t) { sendKey(125, "\u{F701}") } // ignore→advanced

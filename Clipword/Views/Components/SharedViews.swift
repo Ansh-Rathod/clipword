@@ -210,7 +210,7 @@ private struct ArrowFocusAnchorProbe: NSViewRepresentable {
     }
 }
 
-private final class PersistentMenuAnchorNSView: NSView {
+final class PersistentMenuAnchorNSView: NSView {
     weak var box: MenuAnchorBox?
 
     override func layout() {
@@ -224,7 +224,7 @@ private final class PersistentMenuAnchorNSView: NSView {
     }
 }
 
-private struct PersistentMenuAnchorProbe: NSViewRepresentable {
+struct PersistentMenuAnchorProbe: NSViewRepresentable {
     let box: MenuAnchorBox
 
     func makeNSView(context: Context) -> PersistentMenuAnchorNSView {
@@ -709,6 +709,9 @@ final class TableContextMenuView: NSView {
         guard table.bounds.contains(point) else { return event }
         let row = table.row(at: point)
         guard row >= 0, let menu = menuBuilder?(row) else { return event }
+        #if DEBUG
+        DebugTools.lastPoppedMenu = menu
+        #endif
         NSMenu.popUpContextMenu(menu, with: event, for: table)
         return nil
     }
@@ -798,7 +801,11 @@ extension View {
         self
             .focusable()
             .focused(focus, equals: value)
-            .modifier(ArrowFocusRingModifier())
+            // `forced` drives the ring AND the menu-anchor probe from the
+            // binding itself — `\.isFocused` never flips true for these rows,
+            // which left ArrowFocusMenuAnchor.view nil and menus popping at
+            // the window's top-left fallback point.
+            .modifier(ArrowFocusRingModifier(forced: focus.wrappedValue == value))
     }
 
     /// Marks a List as the logical keyboard target without making the List
@@ -1348,6 +1355,60 @@ enum KeyboardContextMenu {
         }, relativeTo: view)
     }
 
+    /// Combined type/app filter menu — the main palette's filter chip as a
+    /// native menu (works identically for mouse clicks and keyboard focus).
+    static func popCombinedFilter(
+        hasFilter: Bool,
+        currentCategory: ClipboardCategory?,
+        apps: [AppFilterOption],
+        currentApp: String?,
+        clear: @escaping () -> Void,
+        selectCategory: @escaping (ClipboardCategory?) -> Void,
+        selectApp: @escaping (String?) -> Void,
+        relativeTo view: NSView? = nil
+    ) {
+        pop(buildMenu { add, separator, submenu in
+            if hasFilter {
+                add("Clear Filters", "", [], clear)
+                separator()
+            }
+            submenu("Type") { add, _ in
+                add(currentCategory == nil ? "✓ All Types" : "All Types", "", [], { selectCategory(nil) })
+                for category in ClipboardCategory.allCases {
+                    let title = category == currentCategory ? "✓ \(category.label)" : category.label
+                    add(title, "", [], { selectCategory(category) })
+                }
+            }
+            submenu("App") { add, separator in
+                add(currentApp == nil ? "✓ All Apps" : "All Apps", "", [], { selectApp(nil) })
+                if !apps.isEmpty { separator() }
+                for app in apps {
+                    let label = "\(app.name) (\(app.count))"
+                    let title = app.bundleId == currentApp ? "✓ \(label)" : label
+                    add(title, "", [], { selectApp(app.bundleId) })
+                }
+            }
+        }, relativeTo: view)
+    }
+
+    /// Time-filter presets with an escape hatch to the calendar/range popover.
+    static func popTimeFilter(
+        current: HistoryTimeFilter,
+        select: @escaping (HistoryTimeFilter) -> Void,
+        pickCustom: @escaping () -> Void,
+        relativeTo view: NSView? = nil
+    ) {
+        let presets: [HistoryTimeFilter] = [.any, .today, .yesterday, .last7Days, .thisMonth]
+        pop(buildMenu { add, separator, _ in
+            for preset in presets {
+                let title = preset == current ? "✓ \(preset.label)" : preset.label
+                add(title, "", [], { select(preset) })
+            }
+            separator()
+            add("Pick a Day or Range…", "", [], pickCustom)
+        }, relativeTo: view)
+    }
+
     /// Pop a menu of choices with a checkmark on the current one (arrow-key navigable).
     static func popChoices<T: Hashable>(
         title: (T) -> String,
@@ -1422,6 +1483,15 @@ enum KeyboardContextMenu {
         return menu
     }
 
+    /// The menu currently tracking — `popUpContextMenu` runs a modal loop, so
+    /// test harnesses dismiss it via `dismissCurrentMenu()` on a common-modes
+    /// Timer rather than a queued main-actor block (which can't run).
+    private(set) static var currentMenu: NSMenu?
+
+    #if DEBUG
+    static func dismissCurrentMenu() { currentMenu?.cancelTracking() }
+    #endif
+
     static func pop(_ menu: NSMenu, relativeTo view: NSView? = nil) {
         // Return on a focused control can fire both the control action and the
         // page's onKeyPress handler; ignore a second pop while the first is up.
@@ -1431,6 +1501,27 @@ enum KeyboardContextMenu {
 
         let anchor = view ?? ArrowFocusMenuAnchor.view
         let window = anchor?.window ?? NSApp.keyWindow
+        #if DEBUG
+        var probeCount = 0, activeCount = 0, winCount = 0
+        if let root = NSApp.keyWindow?.contentView {
+            func walk(_ v: NSView) {
+                if let p = v as? ArrowFocusAnchorNSView {
+                    probeCount += 1
+                    if p.active { activeCount += 1 }
+                    if p.window != nil, !p.bounds.isEmpty { winCount += 1 }
+                }
+                v.subviews.forEach(walk)
+            }
+            walk(root)
+        }
+        DebugTools.settingsLog("[pop] anchor=\(String(describing: anchor)) bounds=\(anchor?.bounds ?? .zero) probes=\(probeCount) active=\(activeCount) wellFormed=\(winCount) keyWin=\(NSApp.keyWindow != nil)")
+        if DebugTools.navTestActive {
+            DebugTools.navLog("[pop] anchor=\(anchor != nil) bounds=\(anchor?.bounds ?? .zero) keyWin=\(NSApp.keyWindow != nil)")
+        }
+        #endif
+
+        currentMenu = menu
+        defer { currentMenu = nil }
 
         // Key events store the mouse cursor in `locationInWindow`. NSMenu uses
         // the current event unless we synthesize a click on the control itself.
