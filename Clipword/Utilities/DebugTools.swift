@@ -158,6 +158,30 @@ enum DebugTools {
     /// DEBUG sessions don't grow /tmp/navtest-app.log on every arrow key.
     static var navTestActive = false
 
+    // MARK: - Insert-path benchmarking (--insert-bench)
+
+    /// Per-stage samples for addSnapshot runs. Zero-cost unless the flag is on.
+    static var insertBenchActive = false
+    private static var benchT0 = ContinuousClock.now
+    static var benchTimes: [String: [Double]] = [:]
+    static var benchOrder: [String] = []
+
+    static func benchBegin() {
+        guard insertBenchActive else { return }
+        benchT0 = ContinuousClock.now
+    }
+
+    /// Records elapsed-ms since the previous mark under `name`.
+    static func benchMark(_ name: String) {
+        guard insertBenchActive else { return }
+        let now = ContinuousClock.now
+        let d = now - benchT0
+        let ms = Double(d.components.seconds) * 1000 + Double(d.components.attoseconds) / 1e15
+        benchT0 = now
+        if benchTimes[name] == nil { benchOrder.append(name) }
+        benchTimes[name, default: []].append(ms)
+    }
+
     // MARK: - Click-latency profiling (--click-test)
 
     /// Marks collected for the current synthetic click: (name, time since
@@ -177,7 +201,7 @@ enum DebugTools {
         switch name {
         case "tap": applySignpost = Perf.begin("click.apply")
         case "applied":
-            if let s = applySignpost { Perf.end("click.apply", s) }
+            if let s = applySignpost { Perf.end("click.apply", s); applySignpost = nil }
         default: break
         }
     }
@@ -394,7 +418,150 @@ enum DebugTools {
                 }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.7 * 8) {
-                clog("[click-test] done")
+                clog("[click-test] phase1 done")
+                clickTestBookmarks(appState: appState, window: win, clog: clog,
+                                   findTable: findTable)
+            }
+        }
+    }
+
+    /// Phase 2/3 of --click-test: correctness checks for the paths phase 1
+    /// doesn't reach — bookmark rows, folder rows (single = select, double =
+    /// collapse toggle), section-header fallthrough, and history double-click
+    /// (select + hide). Synthetic clicks carry no modifiers so `paste:` is
+    /// false — double-click verifies hide/copy without injecting keystrokes
+    /// into the frontmost app.
+    private static func clickTestBookmarks(
+        appState: AppState,
+        window: NSWindow,
+        clog: @escaping (String) -> Void,
+        findTable: @escaping (NSView) -> NSTableView?
+    ) {
+        func check(_ name: String, _ cond: Bool, _ detail: String = "") {
+            clog("[assert] \(cond ? "PASS" : "FAIL") \(name)\(detail.isEmpty ? "" : " — \(detail)")")
+        }
+        func click(row: Int, count: Int = 1, in table: NSTableView) {
+            let rect = table.rect(ofRow: row)
+            let point = table.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
+            for type: NSEvent.EventType in [.leftMouseDown, .leftMouseUp] {
+                if let ev = NSEvent.mouseEvent(
+                    with: type, location: point, modifierFlags: [],
+                    timestamp: 0, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 0, clickCount: count, pressure: 1
+                ) {
+                    NSApp.sendEvent(ev)
+                }
+            }
+        }
+        let store = appState.historyStore
+        // Test data: one folder with a bookmark inside, one bookmark at root
+        // (root bookmark stays addressable regardless of collapse state).
+        let folder = store.createFolder(named: "clicktest-folder")
+        let items = Array(store.items.prefix(2))
+        store.bookmark(items[0], in: folder)
+        store.bookmark(items[1], in: nil)
+        let createdBookmarks = items.compactMap { item in
+            store.bookmarks.first { $0.contentData == item.contentData }
+        }
+        guard createdBookmarks.count == 2 else {
+            check("bookmark-seed", false, "created \(createdBookmarks.count)/2")
+            return
+        }
+        let rootBookmarkID = createdBookmarks[1].id
+        appState.paletteSource = .bookmarks
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            let reg = PaletteSelectionRegistry.shared
+            guard let table = findTable(window.contentView!) else {
+                check("bookmarks-table-found", false)
+                return
+            }
+            guard let folderRow = reg.tableRowProvider?(.folder(folder.id)),
+                  let bmRow = reg.tableRowProvider?(.bookmark(rootBookmarkID)) else {
+                check("bookmark-rows-mapped", false,
+                      "folderRow=\(String(describing: reg.tableRowProvider?(.folder(folder.id))))")
+                return
+            }
+            check("bookmark-rows-mapped", true, "folder=\(folderRow) bm=\(bmRow) rows=\(table.numberOfRows)")
+
+            // Single-click folder → selects .folder
+            click(row: folderRow, in: table)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                check("folder-single-click-selects",
+                      appState.paletteSelection == .folder(folder.id),
+                      "sel=\(String(describing: appState.paletteSelection))")
+
+                // Double-click folder → toggles collapse
+                let wasCollapsed = appState.collapsedFolderIDs.contains(folder.id)
+                click(row: folderRow, count: 2, in: table)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    check("folder-double-click-toggles-collapse",
+                          appState.collapsedFolderIDs.contains(folder.id) != wasCollapsed,
+                          "was=\(wasCollapsed) now=\(appState.collapsedFolderIDs.contains(folder.id))")
+
+                    // Single-click root bookmark → selects .bookmark. Rows
+                    // shift when the collapse toggles — re-map the row.
+                    guard let bmRowNow = reg.tableRowProvider?(.bookmark(rootBookmarkID)) else {
+                        check("bookmark-row-remapped", false)
+                        return
+                    }
+                    click(row: bmRowNow, in: table)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        check("bookmark-single-click-selects",
+                              appState.paletteSelection == .bookmark(rootBookmarkID),
+                              "sel=\(String(describing: appState.paletteSelection))")
+                        clickTestHistoryTail(appState: appState, window: window,
+                                             clog: clog, findTable: findTable,
+                                             clickRow: click, folder: folder,
+                                             created: createdBookmarks)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Phase 3: history section-header clicks fall through (selection must not
+    /// change), and a data-row double-click selects + hides the palette.
+    /// Cleans up the phase-2 folder/bookmarks afterward.
+    private static func clickTestHistoryTail(
+        appState: AppState,
+        window: NSWindow,
+        clog: @escaping (String) -> Void,
+        findTable: @escaping (NSView) -> NSTableView?,
+        clickRow: @escaping (Int, Int, NSTableView) -> Void,
+        folder: BookmarkFolder,
+        created: [BookmarkItem]
+    ) {
+        func check(_ name: String, _ cond: Bool, _ detail: String = "") {
+            clog("[assert] \(cond ? "PASS" : "FAIL") \(name)\(detail.isEmpty ? "" : " — \(detail)")")
+        }
+        appState.paletteSource = .history
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            guard let table = findTable(window.contentView!) else {
+                check("history-table-found", false)
+                return
+            }
+            // Table row 0 is the first day-section header.
+            let before = appState.paletteSelection
+            clickRow(0, 1, table)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                check("header-click-falls-through",
+                      appState.paletteSelection == before,
+                      "sel=\(String(describing: appState.paletteSelection))")
+
+                // Double-click a visible data row → hide the palette.
+                let vis = table.rows(in: table.visibleRect)
+                let dataRow = max(vis.location + 1, 1)
+                clickRow(dataRow, 2, table)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    check("double-click-hides-palette",
+                          !WindowManager.shared.isVisible,
+                          "vis=\(WindowManager.shared.isVisible)")
+                    // Cleanup test rows.
+                    for bm in created { appState.historyStore.deleteBookmark(bm) }
+                    appState.historyStore.deleteFolder(folder)
+                    clog("[click-test] done")
+                }
             }
         }
     }
@@ -542,9 +709,89 @@ enum DebugTools {
 
     /// Scriptable entry point for the seed/self-test menu items — processed at
     /// launch so verification doesn't need UI automation:
+    // MARK: - Insert-path benchmark (--insert-bench[=N])
+
+    /// Drives `addSnapshot` through the real write path: N unique copies then
+    /// N duplicate re-copies. Reports per-stage p50/p95/max to
+    /// /tmp/insert-bench.log, then deletes the bench rows and quits.
+    private static func insertBench(appState: AppState, count: Int) {
+        insertBenchActive = true
+        defer { insertBenchActive = false }
+        let store = appState.historyStore
+        let marker = "clipword-bench-"
+        var lines: [String] = []
+        func log(_ s: String) { lines.append(s) }
+
+        log("insert-bench items=\(store.items.count) n=\(count)")
+        let snapshots = (0..<count).map { i in
+            PasteboardSnapshot(
+                plainText: "\(marker)\(i) quick brown fox \(UUID().uuidString.prefix(8))",
+                contentType: .text,
+                pasteboardTypes: ["public.utf8-plain-text"]
+            )
+        }
+
+        func pct(_ a: [Double], _ p: Double) -> Double {
+            guard !a.isEmpty else { return 0 }
+            let s = a.sorted()
+            return s[min(s.count - 1, Int(Double(s.count - 1) * p))]
+        }
+        func report(_ name: String, totals: [Double]) {
+            log("== \(name) (n=\(totals.count))")
+            log(String(format: "  %@ p50=%7.2fms p95=%7.2fms max=%8.2fms",
+                       "TOTAL".padding(toLength: 14, withPad: " ", startingAt: 0),
+                       pct(totals, 0.5), pct(totals, 0.95), totals.max() ?? 0))
+            for stage in benchOrder {
+                let a = benchTimes[stage] ?? []
+                log(String(format: "  %@ p50=%7.2fms p95=%7.2fms max=%8.2fms",
+                           stage.padding(toLength: 14, withPad: " ", startingAt: 0),
+                           pct(a, 0.5), pct(a, 0.95), a.max() ?? 0))
+            }
+        }
+        func runPhase(_ name: String) {
+            benchTimes.removeAll(); benchOrder.removeAll()
+            var totals: [Double] = []
+            for s in snapshots {
+                let t0 = ContinuousClock.now
+                _ = store.addSnapshot(s)
+                let d = ContinuousClock.now - t0
+                totals.append(Double(d.components.seconds) * 1000
+                              + Double(d.components.attoseconds) / 1e15)
+            }
+            report(name, totals: totals)
+        }
+
+        func verify(_ tag: String) {
+            // The incremental path must yield byte-identical derived state to
+            // the authoritative full rebuild.
+            let incRows = store.paletteRows.map(\.id)
+            let incItems = store.displayedItems.map(\.id)
+            let incSections = store.paletteDaySections.map { "\($0.id):\($0.items.count)" }
+            store.refreshWithoutFetch()
+            let ok = incRows == store.paletteRows.map(\.id)
+                && incItems == store.displayedItems.map(\.id)
+                && incSections == store.paletteDaySections.map { "\($0.id):\($0.items.count)" }
+            log("verify[\(tag)] \(ok ? "PASS" : "FAIL")")
+        }
+
+        runPhase("new-copy")
+        verify("new")
+        runPhase("dup-copy")
+        verify("dup")
+
+        let removed = store.deleteItems { $0.plainText?.hasPrefix(marker) ?? false }
+        log("cleanup removed=\(removed) items=\(store.items.count)")
+        let out = lines.joined(separator: "\n") + "\n"
+        try? out.write(to: URL(fileURLWithPath: "/tmp/insert-bench.log"),
+                       atomically: true, encoding: .utf8)
+        print(out)
+        NSApp.terminate(nil)
+    }
+
     ///   Clipword --seed=1500          insert N seeded rows, then keep running
     ///   Clipword --clear-seeded       delete seeded rows, then keep running
     ///   Clipword --selftest           run the perf self-test, then keep running
+    ///   Clipword --insert-bench[=N]   benchmark the copy/insert path, then quit
     ///   Clipword --debug-quit         quit after handling the other flags
     /// Composes: `--seed=1500 --selftest --debug-quit` is a headless benchmark.
     static func handleLaunchArguments(appState: AppState) {
@@ -574,6 +821,13 @@ enum DebugTools {
         }
         if args.contains("--settings-test") {
             settingsTest(appState: appState)
+        }
+        for arg in args where arg.hasPrefix("--insert-bench") {
+            var count = 200
+            if let n = Int(arg.dropFirst("--insert-bench".count).drop(while: { $0 == "=" })), n > 0 {
+                count = n
+            }
+            insertBench(appState: appState, count: count)
         }
         if args.contains("--debug-quit") {
             // Defer a beat so signposts/log flushes land before exit.

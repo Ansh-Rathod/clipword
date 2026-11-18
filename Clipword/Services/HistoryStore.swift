@@ -62,6 +62,13 @@ final class HistoryStore {
     private var dayStartByID: [UUID: (stamp: Date, day: Date)] = [:]
     private var appNameCache: [String: String] = [:]
     private var lastPaletteRowIDs: [String] = []
+    /// contentHash → item. O(1) duplicate lookup; only hash-bearing rows live
+    /// here — legacy rows are skipped via `hasUnhashedItems`.
+    private var itemsByHash: [String: HistoryItem] = [:]
+    /// Rows without a `contentHash` — duplicate checks scan this small list
+    /// instead of the whole history once hashes are backfilled.
+    private var legacyItems: [HistoryItem] = []
+    private var appCountByBundle: [String: Int] = [:]
     private var lastSearchService: SearchService?
 
     private(set) var lastAction: HistoryActionEvent?
@@ -326,8 +333,11 @@ final class HistoryStore {
             var dayStarts: [UUID: Date] = [:]
             dayStarts.reserveCapacity(items.count)
             itemsByID.reserveCapacity(items.count)
+            itemsByHash.removeAll(keepingCapacity: true)
+            var unhashed: [HistoryItem] = []
             for item in items {
                 itemsByID[item.id] = item
+                if let h = item.contentHash { itemsByHash[h] = item } else { unhashed.append(item) }
                 categoryCounts[item.category, default: 0] += 1
                 appCounts[item.applicationBundleId ?? "unknown", default: 0] += 1
                 if earliest == nil || item.lastCopiedAt < earliest! { earliest = item.lastCopiedAt }
@@ -339,13 +349,16 @@ final class HistoryStore {
                     dayStartByID[item.id] = (item.lastCopiedAt, day)
                 }
             }
+            legacyItems = unhashed
             earliestLastCopiedAt = earliest
-            appOptions = appCounts
-                .map { AppFilterOption(bundleId: $0.key, name: appDisplayName(for: $0.key), count: $0.value) }
-                .sorted { $0.count > $1.count }
+            appCountByBundle = appCounts
+            rebuildAppOptions()
 
             rebuildBookmarkSections()
             rebuildHistorySections(dayStarts: dayStarts, calendar: calendar)
+            #if DEBUG
+            DebugTools.benchMark("derived")
+            #endif
 
             bookmarkItemsByID = Dictionary(uniqueKeysWithValues: bookmarks.map { ($0.id, $0) })
             foldersByID = Dictionary(uniqueKeysWithValues: folders.map { ($0.id, $0) })
@@ -374,28 +387,12 @@ final class HistoryStore {
         }
 
         var sections: [PaletteDaySection] = []
-        var rows: [PaletteRow] = []
-        var indexBySelection: [PaletteSelection: Int] = [:]
-        var tableRowBySelection: [PaletteSelection: Int] = [:]
-        rows.reserveCapacity(filteredItems.count)
-        var tableRow = 0
-
-        func appendSection(_ section: PaletteDaySection) {
-            sections.append(section)
-            tableRow += 1 // the section header is one table row
-            for item in section.items {
-                indexBySelection[.history(item.id)] = rows.count
-                tableRowBySelection[.history(item.id)] = tableRow
-                rows.append(.history(item))
-                tableRow += 1
-            }
-        }
 
         if extractPins, Defaults[.pinPosition] == .top, !pinned.isEmpty {
-            appendSection(PaletteDaySection(id: "pinned", title: "Pinned", items: pinned))
+            sections.append(PaletteDaySection(id: "pinned", title: "Pinned", items: pinned))
         }
         for day in buckets.keys.sorted(by: >) {
-            appendSection(
+            sections.append(
                 PaletteDaySection(
                     id: "day-\(Int(day.timeIntervalSince1970))",
                     title: HistoryTimeFilter.sectionTitle(for: day, calendar: calendar),
@@ -404,15 +401,43 @@ final class HistoryStore {
             )
         }
         if extractPins, Defaults[.pinPosition] == .bottom, !pinned.isEmpty {
-            appendSection(PaletteDaySection(id: "pinned", title: "Pinned", items: pinned))
+            sections.append(PaletteDaySection(id: "pinned", title: "Pinned", items: pinned))
         }
 
         paletteDaySections = sections
+        rebuildRowsAndIndexMaps()
+        updatePaletteRowIDs()
+    }
+
+    /// Rebuilds `paletteRows` + both selection→index maps from
+    /// `paletteDaySections`. One O(sections+rows) pass — used by the full
+    /// rebuild and by the incremental copy path, so both produce identical
+    /// structures.
+    private func rebuildRowsAndIndexMaps() {
+        var rows: [PaletteRow] = []
+        var indexBySelection: [PaletteSelection: Int] = [:]
+        var tableRowBySelection: [PaletteSelection: Int] = [:]
+        rows.reserveCapacity(filteredItems.count)
+        indexBySelection.reserveCapacity(filteredItems.count)
+        tableRowBySelection.reserveCapacity(filteredItems.count)
+        var tableRow = 0
+        for section in paletteDaySections {
+            tableRow += 1 // the section header is one table row
+            for item in section.items {
+                indexBySelection[.history(item.id)] = rows.count
+                tableRowBySelection[.history(item.id)] = tableRow
+                rows.append(.history(item))
+                tableRow += 1
+            }
+        }
         paletteRows = rows
         paletteIndexBySelection = indexBySelection
         paletteTableRowBySelection = tableRowBySelection
+    }
 
-        var ids = rows.map(\.id)
+    /// Recomputes `lastPaletteRowIDs`/`paletteVersion` from current rows.
+    private func updatePaletteRowIDs() {
+        var ids = paletteRows.map(\.id)
         for section in paletteBookmarkSections {
             if let folder = section.folder { ids.append("f-\(folder.id.uuidString)") }
             for item in section.items { ids.append("b-\(item.id.uuidString)") }
@@ -539,22 +564,53 @@ final class HistoryStore {
     /// the end instead of paying an O(n) rebuild per row.
     @discardableResult
     func addSnapshot(_ snapshot: PasteboardSnapshot, deferRefresh: Bool = false) -> HistoryItem? {
+        #if DEBUG
+        DebugTools.benchBegin()
+        #endif
         // Encode once and reuse for both the duplicate check and the stored
         // blob — encoding a multi-MB snapshot twice per copy (base64 of the
         // whole payload) stalled the main thread.
         guard let data = Perf.measure("snapshot.encode", { snapshot.encode() }) else { return nil }
+        #if DEBUG
+        DebugTools.benchMark("encode")
+        #endif
         let hash = Perf.measure("snapshot.hash") { ContentHasher.hex(data) }
+        #if DEBUG
+        DebugTools.benchMark("hash")
+        #endif
 
         if let existing = Perf.measure("store.findDuplicate", {
             findDuplicate(data: data, hash: hash, snapshot: snapshot)
         }) {
+            #if DEBUG
+            DebugTools.benchMark("dupScan")
+            #endif
+            let oldDay = dayStartByID[existing.id]?.day
+                ?? Calendar.current.startOfDay(for: existing.lastCopiedAt)
+            let wasEarliest = earliestLastCopiedAt == existing.lastCopiedAt
             existing.lastCopiedAt = .now
             existing.copyCount += 1
             recordEvent(.copied, on: existing)
+            #if DEBUG
+            DebugTools.benchMark("dupRecord")
+            #endif
             try? modelContext.save()
-            if !deferRefresh { refreshWithoutFetch() }
+            #if DEBUG
+            DebugTools.benchMark("dupSave")
+            #endif
+            if !deferRefresh {
+                if !recordCopyIncremental(existing, oldDay: oldDay, wasEarliest: wasEarliest, isNew: false) {
+                    refreshWithoutFetch()
+                }
+            }
+            #if DEBUG
+            DebugTools.benchMark("dupRefresh")
+            #endif
             return existing
         }
+        #if DEBUG
+        DebugTools.benchMark("dupScan")
+        #endif
 
         let category = Perf.measure("snapshot.classify") {
             ContentClassifier.classify(
@@ -563,6 +619,9 @@ final class HistoryStore {
                 hasColorOnPasteboard: snapshot.hasColorOnPasteboard ?? false
             )
         }
+        #if DEBUG
+        DebugTools.benchMark("classify")
+        #endif
         let metrics = snapshot.plainText.map { TextAnalytics.metrics(for: $0) }
         let item = HistoryItem(
             contentData: data,
@@ -581,16 +640,34 @@ final class HistoryStore {
         )
         modelContext.insert(item)
         recordEvent(.copied, on: item)
+        #if DEBUG
+        DebugTools.benchMark("makeItem")
+        #endif
         try? modelContext.save()
+        #if DEBUG
+        DebugTools.benchMark("save")
+        #endif
         let removed = prune()
+        #if DEBUG
+        DebugTools.benchMark("prune")
+        #endif
         // No full `reload()` here: it re-fetches every row, re-materializing
         // multi-MB blobs on the main thread (a copied 10MB text froze the app
-        // for ~2s per copy). Update the in-memory list instead.
-        items.removeAll { removed.contains($0) }
-        items.append(item)
-        if !deferRefresh {
-            refreshWithoutFetch(removing: Set(removed.map(\.id)))
+        // for ~2s per copy). Update the in-memory list instead — incrementally
+        // when possible, full sort/filter/derived rebuild otherwise.
+        if !deferRefresh, removed.isEmpty,
+           recordCopyIncremental(item, oldDay: nil, wasEarliest: false, isNew: true) {
+            // applied incrementally
+        } else {
+            items.removeAll { removed.contains($0) }
+            items.append(item)
+            if !deferRefresh {
+                refreshWithoutFetch(removing: Set(removed.map(\.id)))
+            }
         }
+        #if DEBUG
+        DebugTools.benchMark("refresh")
+        #endif
         scheduleCategoryBackfill()
 
         if snapshot.contentType == .image, let imageData = snapshot.imageData {
@@ -626,14 +703,13 @@ final class HistoryStore {
         // Hash match first — a 64-char string compare per row. `contentData` is
         // only read for the hash hit, so `.externalStorage` blobs are never
         // faulted for non-matching rows.
-        if let match = items.first(where: { $0.contentHash == hash && $0.contentData == data }) {
+        if let match = itemsByHash[hash], match.contentData == data {
             return match
         }
         // Legacy rows (no hash yet) are matched without touching `contentData`
         // — the old byte-compare materialized every blob on every copy.
-        return items.first { item in
-            item.contentHash == nil
-                && item.contentType == snapshot.contentType
+        return legacyItems.first { item in
+            item.contentType == snapshot.contentType
                 && item.plainText == snapshot.plainText
                 && item.pasteboardTypes == snapshot.pasteboardTypes
                 && item.imageData == snapshot.imageData
@@ -671,8 +747,169 @@ final class HistoryStore {
         items = items.filter { item in
             !ids.contains(item.id)
         }
+        #if DEBUG
+        DebugTools.benchMark("rwf.filter")
+        #endif
         stableSortItems()
+        #if DEBUG
+        DebugTools.benchMark("rwf.sort")
+        #endif
         applyFilters()
+        #if DEBUG
+        DebugTools.benchMark("rwf.applyFilters")
+        #endif
+    }
+
+    private func rebuildAppOptions() {
+        appOptions = appCountByBundle
+            .map { AppFilterOption(bundleId: $0.key, name: appDisplayName(for: $0.key), count: $0.value) }
+            .sorted { $0.count > $1.count }
+    }
+
+    // MARK: - Incremental copy path
+
+    /// True when every item is displayed — no search/category/app/time filter.
+    /// Only then is `filteredItems` a pure pin-partition of `items`, which the
+    /// incremental updater relies on.
+    private var filtersInactive: Bool {
+        searchQuery.isEmpty && activeCategory == nil && activeAppBundleId == nil && !timeFilter.isActive
+    }
+
+    /// The comparator `stableSortItems` uses — descending by the sort key.
+    private func outranks(_ a: HistoryItem, _ b: HistoryItem) -> Bool {
+        switch Defaults[.sortOrder] {
+        case .lastCopied:
+            (a.lastCopiedAt, a.id.uuidString) > (b.lastCopiedAt, b.id.uuidString)
+        case .firstCopied:
+            (a.firstCopiedAt, a.id.uuidString) > (b.firstCopiedAt, b.id.uuidString)
+        case .copyCount:
+            (a.copyCount, a.id.uuidString) > (b.copyCount, b.id.uuidString)
+        }
+    }
+
+    /// First index in `range` whose element does not outrank `item`.
+    private func insertionIndex(of item: HistoryItem, in arr: [HistoryItem], range: Range<Int>) -> Int {
+        var lo = range.lowerBound, hi = range.upperBound
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if outranks(arr[mid], item) { lo = mid + 1 } else { hi = mid }
+        }
+        return lo
+    }
+
+    /// Range inside `filteredItems` that unpinned items occupy.
+    private var unpinnedRange: Range<Int> {
+        switch Defaults[.pinPosition] {
+        case .top:
+            let lo = filteredItems.firstIndex(where: { !$0.isPinned }) ?? filteredItems.count
+            return lo..<filteredItems.count
+        case .bottom:
+            let hi = filteredItems.firstIndex(where: { $0.isPinned }) ?? filteredItems.count
+            return 0..<hi
+        }
+    }
+
+    /// In-memory update for the hot copy path: one item inserted or bumped to
+    /// a newer `lastCopiedAt`. Applies a targeted insertion + section surgery
+    /// + one light reindex instead of the full sort/filter/derived rebuild.
+    /// Returns false when a precondition doesn't hold and the caller must
+    /// fall back to `refreshWithoutFetch()`.
+    private func recordCopyIncremental(_ item: HistoryItem, oldDay: Date?, wasEarliest: Bool, isNew: Bool) -> Bool {
+        guard filtersInactive, !item.isPinned else { return false }
+        let calendar = Calendar.current
+
+        // items[] — sort-key order, no pin partition
+        if !isNew, let i = items.firstIndex(where: { $0.id == item.id }) {
+            items.remove(at: i)
+        }
+        items.insert(item, at: insertionIndex(of: item, in: items, range: items.indices))
+
+        // filteredItems[] — pin-partitioned; an unpinned item lives in the
+        // unpinned region
+        if !isNew, let i = filteredItems.firstIndex(where: { $0.id == item.id }) {
+            filteredItems.remove(at: i)
+        }
+        filteredItems.insert(item, at: insertionIndex(of: item, in: filteredItems, range: unpinnedRange))
+
+        // scalar derived state
+        itemsByID[item.id] = item
+        if isNew {
+            if let h = item.contentHash { itemsByHash[h] = item } else { legacyItems.append(item) }
+            categoryCounts[item.category, default: 0] += 1
+            appCountByBundle[item.applicationBundleId ?? "unknown", default: 0] += 1
+            rebuildAppOptions()
+            if earliestLastCopiedAt == nil || item.lastCopiedAt < earliestLastCopiedAt! {
+                earliestLastCopiedAt = item.lastCopiedAt
+            }
+        } else if wasEarliest {
+            // The earliest item just got newer — the min moved. Recompute;
+            // rare (only when re-copying the single oldest row).
+            earliestLastCopiedAt = items.map(\.lastCopiedAt).min()
+        }
+        let day = calendar.startOfDay(for: item.lastCopiedAt)
+        dayStartByID[item.id] = (item.lastCopiedAt, day)
+
+        // sections: move out of the old day bucket (dup path), then into the
+        // current one — creating or deleting buckets as needed. A re-copy that
+        // lands back in its exact slot leaves rows/maps/ids untouched.
+        let from = isNew ? nil : removeFromDaySection(item, day: oldDay)
+        let to = insertIntoDaySection(item, day: day, calendar: calendar)
+        if isNew || from?.sec != to.sec || from?.idx != to.idx {
+            rebuildRowsAndIndexMaps()
+            updatePaletteRowIDs()
+        }
+        return true
+    }
+
+    /// Removes `item` from its day section; returns (sectionIndex, itemIndex)
+    /// it occupied, or nil when it wasn't found there.
+    private func removeFromDaySection(_ item: HistoryItem, day: Date?) -> (sec: Int, idx: Int)? {
+        guard let day else { return nil }
+        let secID = "day-\(Int(day.timeIntervalSince1970))"
+        guard let s = paletteDaySections.firstIndex(where: { $0.id == secID }) else { return nil }
+        var items = paletteDaySections[s].items
+        guard let j = items.firstIndex(where: { $0.id == item.id }) else { return nil }
+        items.remove(at: j)
+        if items.isEmpty {
+            paletteDaySections.remove(at: s)
+        } else {
+            let old = paletteDaySections[s]
+            paletteDaySections[s] = PaletteDaySection(id: old.id, title: old.title, items: items)
+        }
+        return (s, j)
+    }
+
+    /// Inserts `item` into its day section at sorted position; returns the
+    /// (sectionIndex, itemIndex) it now occupies.
+    private func insertIntoDaySection(_ item: HistoryItem, day: Date, calendar: Calendar) -> (sec: Int, idx: Int) {
+        let secID = "day-\(Int(day.timeIntervalSince1970))"
+        if let s = paletteDaySections.firstIndex(where: { $0.id == secID }) {
+            var items = paletteDaySections[s].items
+            let idx = insertionIndex(of: item, in: items, range: items.indices)
+            items.insert(item, at: idx)
+            let old = paletteDaySections[s]
+            paletteDaySections[s] = PaletteDaySection(id: old.id, title: old.title, items: items)
+            return (s, idx)
+        }
+        // New day bucket — sections stay sorted by day descending; the pinned
+        // section is never a day section.
+        let section = PaletteDaySection(
+            id: secID,
+            title: HistoryTimeFilter.sectionTitle(for: day, calendar: calendar),
+            items: [item]
+        )
+        var insertAt = paletteDaySections.count
+        for (i, s) in paletteDaySections.enumerated() {
+            if s.id == "pinned" {
+                if Defaults[.pinPosition] == .bottom { insertAt = i }
+                continue
+            }
+            guard let ts = Int(s.id.dropFirst(4)) else { continue }
+            if Date(timeIntervalSince1970: TimeInterval(ts)) < day { insertAt = i; break }
+        }
+        insertAt = min(insertAt, paletteDaySections.count)
+        paletteDaySections.insert(section, at: insertAt)
+        return (insertAt, 0)
     }
 
     func select(_ item: HistoryItem, paste: Bool, withoutFormatting: Bool = false) {
@@ -688,6 +925,9 @@ final class HistoryStore {
         // ignore the next monitor tick so we don't double-count this copy.
         Defaults[.ignoreNextEvent] = true
         PasteService.copyToClipboard(snapshot: snapshot, withoutFormatting: strip)
+        let oldDay = dayStartByID[item.id]?.day
+            ?? Calendar.current.startOfDay(for: item.lastCopiedAt)
+        let wasEarliest = earliestLastCopiedAt == item.lastCopiedAt
         item.lastCopiedAt = .now
         item.copyCount += 1
         recordEvent(.copied, on: item)
@@ -705,7 +945,9 @@ final class HistoryStore {
             try? modelContext.save()
             publishAction(.copied, itemID: item.id)
         }
-        refreshWithoutFetch()
+        if !recordCopyIncremental(item, oldDay: oldDay, wasEarliest: wasEarliest, isNew: false) {
+            refreshWithoutFetch()
+        }
     }
 
     private func recordEvent(_ kind: ClipboardEventKind, on item: HistoryItem) {

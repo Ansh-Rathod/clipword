@@ -122,6 +122,40 @@ From `--seed=1500 --selftest` on the real store — 1,612 items total
 | `addSnapshot` insert @1,612 rows | ~41ms (save + derived rebuild) |
 | Delete one row | ~35ms |
 
+## Write path — incremental refresh (per-stage, `--insert-bench=200`)
+
+`addSnapshot` at ~1,800 items, 200 unique copies + 200 duplicate re-copies
+through the real write path. Before: every copy paid a full sort + filter +
+derived rebuild. After: hash-dict duplicate lookup, targeted sorted insertion,
+day-section surgery, and one light rows/index-map pass
+(`recordCopyIncremental`).
+
+| Stage | Before p50 | After p50 |
+|---|---|---|
+| **new-copy total** | **55.2ms** | **11.0ms** |
+| dup scan | 6.4ms | 3.2ms (bounded by unhashed legacy rows) |
+| save | 1.9ms | 1.7ms |
+| refresh (sort+filter+derived) | 46.4ms | 5.7ms incremental |
+| **dup-copy total** | **44.9ms** | **9.1ms** |
+| dup refresh | 37.4ms | 7.0ms (0ms when the row lands in its own slot) |
+
+Correctness gate: after each phase the benchmark forces a full
+`refreshWithoutFetch()` and asserts the incremental state is byte-identical
+(paletteRows, displayedItems, day sections) — `verify[new] PASS`,
+`verify[dup] PASS`.
+
+XCTest perf deltas from the same change (`xcodebuild test`):
+
+| Test | Before | After |
+|---|---|---|
+| testPerfBulkInsert (1,500 inserts) | ~208s | ~77s |
+| testPerfDuplicateLookup | ~18.4s | ~5.1s |
+| testPerfApplyFiltersOn1500 | ~5.9s | ~3.7s |
+| testPerfReload | ~0.99s | ~0.69s |
+| testPerfSelectionLookups | ~4.8s | ~2.4s |
+
+Reproduce: `.build-release/Build/Products/Debug/Clipword.app/Contents/MacOS/Clipword --insert-bench=200` → `/tmp/insert-bench.log`.
+
 ## Before/after (A/B harness, same 1,612 rows both schemas)
 
 Two standalone `swiftc -O` binaries seeded identical datasets (1,612 rows, ~34MB
