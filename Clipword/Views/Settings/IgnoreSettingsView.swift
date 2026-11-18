@@ -132,8 +132,17 @@ struct IgnoreSettingsView: View {
         .onKeyPress(keys: [.upArrow, .downArrow]) { press in
             handleArrow(press.key == .upArrow ? .up : .down, modifiers: press.modifiers)
         }
-        .onKeyPress(.return) { activate() }
-        .onKeyPress(.space) { activate() }
+        .onKeyPress(.return) {
+            // Editing a field: Return must reach the TextField's onSubmit —
+            // swallowing it here made typed content impossible to commit.
+            if fieldActive { return .ignored }
+            return activate()
+        }
+        .onKeyPress(.space) {
+            // Editing a field: space is a character, not an activation.
+            if fieldActive { return .ignored }
+            return activate()
+        }
         .onKeyPress(.escape) {
             if fieldActive {
                 fieldActive = false
@@ -284,21 +293,24 @@ struct IgnoreSettingsView: View {
         // ⌘↑/⌘↓ jump to the top/bottom item from anywhere in the view (unless
         // the text field is being edited, where they're text-navigation).
         if (direction == .up || direction == .down), modifiers.contains(.command),
-           !(focus == .field && fieldActive) {
+           !fieldActive {
             applyGlobalJump(direction)
             return .handled
         }
 
-        guard let current = focus else { return .ignored }
-
-        if current == .field, fieldActive {
+        // Editing a field: ←/→ are caret keys; ↑/↓ commit-and-exit, then
+        // continue moving from the field row. (`focus` is nil while the real
+        // field editor holds first responder.)
+        if fieldActive {
             if direction == .left || direction == .right { return .ignored }
             fieldActive = false
+            focus = .field
         }
 
-        // ←/→ while the segmented tab picker is highlighted flips tabs; at the
-        // edges the key falls through to spatial movement (left exits to the
-        // sidebar, right is swallowed).
+        guard let current = focus else { return .ignored }
+
+        // ←/→ while the segmented tab picker is highlighted flips tabs —
+        // that *is* its activation, matching the form pages' "right = deeper".
         if current == .tabs, direction == .left || direction == .right {
             let next = selectedTab + (direction == .right ? 1 : -1)
             if (0...2).contains(next) {
@@ -312,26 +324,26 @@ struct IgnoreSettingsView: View {
             return .handled
         }
 
-        let result = moveSpatialFocus(from: current, direction: direction, rows: focusRows)
-        switch result {
-        case .moved(let next):
+        // Same model as the form pages: ↑/↓ walk the row order, → activates
+        // the focused control, ← backs out to the sidebar.
+        switch direction {
+        case .up, .down:
+            guard let idx = focusOrder.firstIndex(of: current) else { return .handled }
+            let next = idx + (direction == .down ? 1 : -1)
+            guard focusOrder.indices.contains(next) else { return .handled }
             fieldActive = false
-            focus = next
+            focus = focusOrder[next]
             #if DEBUG
-            DebugTools.settingsLog("[ignore] moved → \(next) focus=\(String(describing: focus))")
+            DebugTools.settingsLog("[ignore] moved → \(focusOrder[next])")
             #endif
             return .handled
-        case .listMove:
-            return .handled
-        case .exitPrevious:
-            // ← at the leading edge backs out to the sidebar; ↑ past the top
-            // row is a no-op (ejecting on ↑ felt like an accidental jump).
-            if direction == .left, sidebarOpenForFocus {
+        case .right:
+            return activate()
+        case .left:
+            if sidebarOpenForFocus {
                 fieldActive = false
                 arrowFocusExit?(.previous)
             }
-            return .handled
-        case .exitNext:
             return .handled
         }
     }

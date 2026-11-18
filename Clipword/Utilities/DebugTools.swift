@@ -635,12 +635,14 @@ enum DebugTools {
         let savedSaveImages = Defaults[.saveImages]
         let savedClearOnQuit = Defaults[.clearOnQuit]
         let savedAllowOnly = Defaults[.allowedAppsOnly]
+        let savedTypes = Defaults[.ignoredPasteboardTypes]
         // Idempotent — writing the same values twice is harmless.
         func restoreDefaults() {
             Defaults[.pasteAutomatically] = savedPasteAuto
             Defaults[.saveImages] = savedSaveImages
             Defaults[.clearOnQuit] = savedClearOnQuit
             Defaults[.allowedAppsOnly] = savedAllowOnly
+            Defaults[.ignoredPasteboardTypes] = savedTypes
             slog("[settings] defaults restored")
         }
         // willTerminateNotification posts before the delegate's quit hook
@@ -696,6 +698,17 @@ enum DebugTools {
         t += step; after(t) { sendKey(125, "\u{F701}") } // ↓ → .field
         t += step; after(t) { sendKey(36, "\r") } // Return → fieldActive
         t += step; after(t) { logState("ignore → ↓ Return → expect searchFocus=true") }
+        // Type real characters — they must reach the NSTextField (proves the
+        // field has first responder, not just the fieldActive flag), then
+        // Return submits via onSubmit → ignoredPasteboardTypes gains "abc".
+        t += step; after(t) { sendKey(0, "a") }
+        t += step; after(t) { sendKey(11, "b") }
+        t += step; after(t) { sendKey(8, "c") }
+        t += step; after(t) { sendKey(36, "\r") } // Return → submit
+        t += step; after(t) {
+            let ok = Defaults[.ignoredPasteboardTypes].contains("abc")
+            slog("[settings] typed abc + Return → expect contains(abc)=true actual=\(ok)")
+        }
         t += step; after(t) { sendKey(53, "\u{1B}") } // Esc → leave field editing
         t += step; after(t) { logState("ignore Esc → expect searchFocus=false") }
         t += step; after(t) { sendKey(53, "\u{1B}") } // Esc → sidebar
