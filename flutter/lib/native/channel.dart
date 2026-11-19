@@ -16,6 +16,7 @@ class ClipwordChannel {
 
   final _snapshot = StreamController<ClipSnapshot>.broadcast();
   final _windowMode = StreamController<String>.broadcast();
+  final _viewsChanged = StreamController<void>.broadcast();
   final _edit = StreamController<Map<Object?, Object?>>.broadcast();
   final _newFolder = StreamController<Map<Object?, Object?>>.broadcast();
   final _renameFolder = StreamController<Map<Object?, Object?>>.broadcast();
@@ -23,6 +24,7 @@ class ClipwordChannel {
 
   Stream<ClipSnapshot> get snapshots => _snapshot.stream;
   Stream<String> get windowModes => _windowMode.stream;
+  Stream<void> get viewsChanged => _viewsChanged.stream;
   Stream<Map<Object?, Object?>> get edits => _edit.stream;
   Stream<Map<Object?, Object?>> get newFolders => _newFolder.stream;
   Stream<Map<Object?, Object?>> get renameFolders => _renameFolder.stream;
@@ -35,6 +37,8 @@ class ClipwordChannel {
         _snapshot.add(ClipSnapshot(map));
       case 'onWindowMode':
         _windowMode.add(call.arguments as String);
+      case 'onViewsChanged':
+        _viewsChanged.add(null);
       case 'edit':
         _edit.add(Map<Object?, Object?>.from(call.arguments as Map));
       case 'newFolder':

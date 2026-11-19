@@ -1,5 +1,7 @@
 import 'package:flutter/cupertino.dart' show CupertinoIcons;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart' show Icons;
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:super_sliver_list/super_sliver_list.dart';
@@ -137,43 +139,99 @@ class _PalettePageState extends State<PalettePage> {
   }
 
   void _move(int delta) {
-    if (_searchFocus.hasPrimaryFocus) {
-      _focusList();
-    }
-    if (delta.abs() <= 1 && _revealIfOffscreen(delta)) {
+    _focusList();
+    if (_revealIfOffscreen(delta)) {
       return;
     }
-    _revealIndex(c.move(delta), delta);
+    _ensureRowVisible(c.move(delta), delta);
   }
 
   bool _revealIfOffscreen(int delta) {
     final index = c.selectedIndex;
-    if (index < 0 || !_listController.isAttached) return false;
-    final range = _listController.visibleRange;
-    if (range == null) return false;
-    if (index >= range.$1 && index <= range.$2) return false;
-    _revealIndex(index, delta);
+    if (index < 0) return false;
+    if (_isSelectedOnScreen()) return false;
+    _ensureRowVisible(index, delta, force: true);
     return true;
   }
 
-  void _revealIndex(int index, int delta) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (index < 0 ||
+  bool _isSelectedOnScreen() {
+    final index = c.selectedIndex;
+    if (index < 0) return true;
+    if (_listController.isAttached) {
+      final range = _listController.visibleRange;
+      if (range != null && (index < range.$1 || index > range.$2)) {
+        return false;
+      }
+    }
+    return _selectedViewportGap() == 0;
+  }
+
+  /// Pixels the selected row is outside the list viewport. Negative = above,
+  /// positive = below, 0 = fully visible. Null if the row is not laid out.
+  double? _selectedViewportGap() {
+    final context = _selectedRowKey.currentContext;
+    if (context == null) return null;
+    final row = context.findRenderObject();
+    if (row is! RenderBox || !row.hasSize || !row.attached) return null;
+    final viewportBox = switch (RenderAbstractViewport.maybeOf(row)) {
+      final RenderBox box => box,
+      _ => null,
+    };
+    if (viewportBox == null || !viewportBox.hasSize) return null;
+    final origin = row.localToGlobal(Offset.zero, ancestor: viewportBox);
+    final top = origin.dy;
+    final bottom = top + row.size.height;
+    final viewH = viewportBox.size.height;
+    if (top < -0.5) return top;
+    if (bottom > viewH + 0.5) return bottom - viewH;
+    return 0;
+  }
+
+  void _ensureRowVisible(int index, int delta, {bool force = false}) {
+    if (index < 0) return;
+    if (!force && _isSelectedOnScreen()) return;
+    if (_scrollSelectedByGeometry()) return;
+    _jumpToIndex(index, delta);
+  }
+
+  bool _scrollSelectedByGeometry() {
+    if (!_scrollController.hasClients) return false;
+    final gap = _selectedViewportGap();
+    if (gap == null || gap == 0) return false;
+    final position = _scrollController.position;
+    final target = (position.pixels + gap).clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+    if ((target - position.pixels).abs() < 0.5) return false;
+    _scrollController.jumpTo(target);
+    return true;
+  }
+
+  void _jumpToIndex(int index, int delta) {
+    void jump() {
+      if (!mounted ||
           !_listController.isAttached ||
           !_scrollController.hasClients) {
         return;
       }
       final range = _listController.visibleRange;
-      if (range != null && index >= range.$1 && index <= range.$2) {
-        return;
-      }
       final above = range != null && index < range.$1;
       _listController.jumpToItem(
         index: index,
         scrollController: _scrollController,
         alignment: above || delta < 0 ? 0.0 : 1.0,
       );
-    });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _scrollSelectedByGeometry();
+      });
+    }
+
+    if (_listController.isAttached && _scrollController.hasClients) {
+      jump();
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) => jump());
   }
 
   void _onController() {
@@ -255,7 +313,7 @@ class _PalettePageState extends State<PalettePage> {
       c.refresh();
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || c.windowMode == 'settings') return;
+      if (!mounted || c.windowMode != 'palette') return;
       if (c.dialogOpen) return;
       _searchFocus.requestFocus();
     });
@@ -266,8 +324,9 @@ class _PalettePageState extends State<PalettePage> {
       c.listFocused = true;
       c.refresh();
     }
+    if (_pageFocus.hasPrimaryFocus) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || c.windowMode == 'settings') return;
+      if (!mounted || c.windowMode != 'palette') return;
       if (c.dialogOpen) return;
       _searchFocus.unfocus();
       _pageFocus.requestFocus();
@@ -645,7 +704,13 @@ class _PalettePageState extends State<PalettePage> {
       child: Listener(
         behavior: HitTestBehavior.translucent,
         onPointerDown: (_) => _keepArrowKeys(),
-        child: SuperListView.builder(
+        onPointerSignal: (event) {
+          if (event is PointerScrollEvent) _keepArrowKeys();
+        },
+        child: FocusTraversalGroup(
+          descendantsAreFocusable: false,
+          descendantsAreTraversable: false,
+          child: SuperListView.builder(
           padding: const EdgeInsets.symmetric(horizontal: 12),
           listController: _listController,
           controller: _scrollController,
@@ -727,6 +792,7 @@ class _PalettePageState extends State<PalettePage> {
               ),
             );
           },
+        ),
         ),
       ),
     );

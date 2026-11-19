@@ -6,8 +6,13 @@ import '../theme/tokens.dart';
 import 'controller.dart';
 
 class ClipwordApp extends StatelessWidget {
-  const ClipwordApp({super.key, required this.controller});
+  const ClipwordApp({
+    super.key,
+    required this.controller,
+    this.settingsWindow = false,
+  });
   final ClipwordController controller;
+  final bool settingsWindow;
 
   @override
   Widget build(BuildContext context) {
@@ -26,10 +31,9 @@ class ClipwordApp extends StatelessWidget {
           builder: (context, _) {
             final dark = MediaQuery.platformBrightnessOf(context) == Brightness.dark;
             final palette = ClipPalette(dark: dark);
-            final settings = controller.windowMode == 'settings';
             return ColoredBox(
-              color: settings ? palette.window : const Color(0x00000000),
-              child: settings
+              color: settingsWindow ? palette.window : const Color(0x00000000),
+              child: settingsWindow
                   ? SettingsPage(controller: controller, palette: palette)
                   : PalettePage(controller: controller, palette: palette),
             );

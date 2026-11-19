@@ -27,8 +27,14 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     private let clipboardMonitor = ClipboardMonitor()
     private var channel: FlutterMethodChannel?
     private var events: FlutterEventSink?
+    private var settingsChannel: FlutterMethodChannel?
+    fileprivate var settingsEvents: FlutterEventSink?
     private var statusItem: NSStatusItem?
     private weak var flutterWindow: NSWindow?
+    private var settingsWindow: NSWindow?
+    private var settingsViewController: FlutterViewController?
+    private var settingsEngine: FlutterEngine?
+    private lazy var settingsStreamHandler = SettingsStreamHandler(host: self)
     private var settingsSection = "general"
     private var windowMode = "hidden"
     private var paletteSource = "history"
@@ -161,7 +167,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
             }
         }
         localHotkeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, self.windowMode == "palette" || self.windowMode == "settings" else {
+            guard let self, self.windowMode == "palette" || self.settingsWindow?.isVisible == true else {
                 return event
             }
             guard let pressed = KeyboardShortcuts.Shortcut(event: event),
@@ -293,14 +299,51 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
 
     func showSettings(section: String = "general") {
         settingsSection = section
-        guard let window = flutterWindow else { return }
-        hidePaletteKeepingWindow()
-        windowMode = "settings"
+        hidePalette()
+        if let window = settingsWindow {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            emitSnapshot()
+            return
+        }
+
+        let engine = FlutterEngine(name: "clipword.settings", project: nil)
+        bindSettings(engine.binaryMessenger)
+        engine.run(withEntrypoint: "settingsMain")
+        let settingsController = FlutterViewController(engine: engine, nibName: nil, bundle: nil)
+        RegisterGeneratedPlugins(registry: settingsController)
+
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: Self.settingsSize),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Settings"
+        window.isReleasedWhenClosed = false
+        window.isRestorable = false
+        window.minSize = NSSize(width: 640, height: 420)
+        window.contentViewController = settingsController
+        window.delegate = self
         applySettingsChrome(window)
+        settingsEngine = engine
+        settingsViewController = settingsController
+        settingsWindow = window
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        emitWindowMode()
         emitSnapshot()
+    }
+
+    private func bindSettings(_ messenger: FlutterBinaryMessenger) {
+        let channel = FlutterMethodChannel(name: "clipword", binaryMessenger: messenger)
+        settingsChannel = channel
+        channel.setMethodCallHandler { [weak self] call, result in
+            Task { @MainActor in
+                self?.handle(call, result: result)
+            }
+        }
+        let eventChannel = FlutterEventChannel(name: "clipword/events", binaryMessenger: messenger)
+        eventChannel.setStreamHandler(settingsStreamHandler)
     }
 
     func hidePalette() {
@@ -312,10 +355,6 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         emitWindowMode()
     }
 
-    private func hidePaletteKeepingWindow() {
-        windowMode = "hidden"
-    }
-
     private func hideBecauseFocusLeft() {
         guard !suppressFocusLossHide else { return }
         guard windowMode == "palette" else { return }
@@ -323,6 +362,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === flutterWindow else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             guard self.windowMode == "palette" else { return }
@@ -413,6 +453,10 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if sender === settingsWindow {
+            sender.orderOut(nil)
+            return false
+        }
         sender.orderOut(nil)
         windowMode = "hidden"
         emitWindowMode()
@@ -420,6 +464,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     }
 
     func windowDidMove(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === flutterWindow else { return }
         guard windowMode == "palette", let window = flutterWindow else { return }
         Defaults[.popupLastFrame] = NSStringFromRect(window.frame)
     }
@@ -987,7 +1032,8 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         }
         builder(add, separator, submenu)
         setMenuTracking(true)
-        if let origin, let view = flutterWindow?.contentViewController?.view ?? flutterWindow?.contentView {
+        let hostWindow = NSApp.keyWindow ?? flutterWindow
+        if let origin, let view = hostWindow?.contentViewController?.view ?? hostWindow?.contentView {
             let point = NSPoint(x: origin.x, y: view.bounds.height - origin.y)
             menu.popUp(positioning: nil, at: point, in: view)
         } else {
@@ -1044,7 +1090,9 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
 
     func emitSnapshot() {
         pruneSelection()
-        events?(["type": "snapshot", "payload": snapshotDict()])
+        let payload: [String: Any] = ["type": "snapshot", "payload": snapshotDict()]
+        events?(payload)
+        settingsEvents?(payload)
     }
 
     private func pruneSelection() {
@@ -1280,6 +1328,29 @@ extension ClipwordHost: FlutterStreamHandler {
     nonisolated func onCancel(withArguments arguments: Any?) -> FlutterError? {
         Task { @MainActor in
             self.events = nil
+        }
+        return nil
+    }
+}
+
+private final class SettingsStreamHandler: NSObject, FlutterStreamHandler {
+    weak var host: ClipwordHost?
+
+    init(host: ClipwordHost) {
+        self.host = host
+    }
+
+    nonisolated func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+        Task { @MainActor in
+            self.host?.settingsEvents = events
+            self.host?.emitSnapshot()
+        }
+        return nil
+    }
+
+    nonisolated func onCancel(withArguments arguments: Any?) -> FlutterError? {
+        Task { @MainActor in
+            self.host?.settingsEvents = nil
         }
         return nil
     }
