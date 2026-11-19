@@ -17,7 +17,7 @@ class ClipwordApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return WidgetsApp(
-      color: ClipTokens.accent,
+      color: controller.snapshot.accentColor ?? ClipTokens.accent,
       debugShowCheckedModeBanner: false,
       pageRouteBuilder: <T>(settings, builder) {
         return PageRouteBuilder<T>(
@@ -30,7 +30,12 @@ class ClipwordApp extends StatelessWidget {
           listenable: controller,
           builder: (context, _) {
             final dark = MediaQuery.platformBrightnessOf(context) == Brightness.dark;
-            final palette = ClipPalette(dark: dark);
+            final palette = ClipPalette(
+              dark: dark,
+              systemAccent: controller.snapshot.accentColor,
+              systemAccentFill: controller.snapshot.accentFill,
+              systemAccentForeground: controller.snapshot.accentForeground,
+            );
             return ColoredBox(
               color: const Color(0x00000000),
               child: settingsWindow

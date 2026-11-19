@@ -113,6 +113,9 @@ class ClipwordController extends ChangeNotifier {
   }
 
   void _applySnapshot(ClipSnapshot value) {
+    final previousSource = snapshot.source;
+    final previousSelection = selection;
+    final previousIndex = _selectableIndex(previousSelection);
     if (snapshot.source != value.source) {
       _localSelection = null;
     }
@@ -141,7 +144,53 @@ class ClipwordController extends ChangeNotifier {
         _setHistoryFlag(actedId, 'isBookmarked', false);
       }
     }
+    if (previousSource == value.source) {
+      _keepNeighborSelection(previousSelection, previousIndex);
+    }
     _scheduleDetail();
+  }
+
+  int _selectableIndex(Selection? current) {
+    if (current == null) return -1;
+    return selectable.indexWhere(
+      (row) => row.kind == current.kind && row.id == current.id,
+    );
+  }
+
+  /// After delete / move-to-folder the selected row is gone or jumps. Keep the
+  /// highlight on the item that occupied the same slot (below), else the one above.
+  void _keepNeighborSelection(Selection? previous, int previousIndex) {
+    final rows = selectable;
+    if (rows.isEmpty) {
+      _localSelection = null;
+      return;
+    }
+    final current = selection;
+    final newIndex = _selectableIndex(current);
+    if (newIndex >= 0) {
+      if (previousIndex < 0 || (newIndex - previousIndex).abs() <= 1) return;
+      if (previous?.kind != 'bookmark' && previous?.kind != 'folder') return;
+    } else if (previousIndex < 0) {
+      return;
+    }
+
+    var target = previousIndex;
+    if (target > rows.length - 1) target = rows.length - 1;
+    if (target < 0) target = 0;
+    if (previous != null &&
+        rows[target].kind == previous.kind &&
+        rows[target].id == previous.id) {
+      if (target + 1 < rows.length) {
+        target += 1;
+      } else if (target > 0) {
+        target -= 1;
+      }
+    }
+    final row = rows[target];
+    final id = row.id;
+    if (id == null) return;
+    _localSelection = Selection(row.kind, id);
+    channel.select(row.kind, id);
   }
 
   void _presentToast(String kind, String? itemId) {
@@ -166,26 +215,21 @@ class ClipwordController extends ChangeNotifier {
       _historyItems = List<HistoryRow>.of(page);
       return;
     }
-    final prefixLen = page.length;
-    var sameOrder = _historyItems.length >= prefixLen;
-    if (sameOrder) {
-      for (var i = 0; i < prefixLen; i++) {
-        if (_historyItems[i].id != page[i].id) {
-          sameOrder = false;
-          break;
-        }
+    final pageIds = {for (final item in page) item.id};
+    final lastPageId = page.last.id;
+    var seenLast = false;
+    final tail = <HistoryRow>[];
+    for (final item in _historyItems) {
+      if (!seenLast) {
+        if (item.id == lastPageId) seenLast = true;
+        continue;
       }
+      if (pageIds.contains(item.id)) continue;
+      tail.add(item);
     }
-    if (sameOrder) {
-      _historyItems = [
-        ...page,
-        ..._historyItems.skip(prefixLen),
-      ];
-      if (_historyItems.length > itemCount) {
-        _historyItems = _historyItems.sublist(0, itemCount);
-      }
-    } else {
-      _historyItems = List<HistoryRow>.of(page);
+    _historyItems = [...page, ...tail];
+    if (_historyItems.length > itemCount) {
+      _historyItems = _historyItems.sublist(0, itemCount);
     }
   }
 

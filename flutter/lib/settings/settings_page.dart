@@ -150,11 +150,11 @@ class _SidebarItemState extends State<_SidebarItem> {
   Widget build(BuildContext context) {
     final selected = widget.selected;
     final fill = selected
-        ? widget.palette.accent
+        ? widget.palette.accentFill
         : hovered
         ? widget.palette.hover
         : const Color(0x00000000);
-    final label = selected ? const Color(0xFFFFFFFF) : widget.palette.label;
+    final label = selected ? widget.palette.onAccent : widget.palette.label;
     return Padding(
       padding: const EdgeInsets.only(bottom: 2),
       child: MouseRegion(
@@ -410,6 +410,46 @@ class _ShortcutKeys extends StatelessWidget {
   }
 }
 
+class _HotkeyKeys extends StatefulWidget {
+  const _HotkeyKeys({
+    required this.keys,
+    required this.palette,
+    required this.onTap,
+  });
+  final List<String> keys;
+  final ClipPalette palette;
+  final VoidCallback onTap;
+
+  @override
+  State<_HotkeyKeys> createState() => _HotkeyKeysState();
+}
+
+class _HotkeyKeysState extends State<_HotkeyKeys> {
+  bool hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => hovered = true),
+      onExit: (_) => setState(() => hovered = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: hovered ? widget.palette.hover : const Color(0x00000000),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            child: _ShortcutKeys(widget.keys, palette: widget.palette),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class GeneralPane extends StatelessWidget {
   const GeneralPane({
     super.key,
@@ -493,8 +533,13 @@ class GeneralPane extends StatelessWidget {
           children: [
             _PrefRow(
               label: 'Open Clipword',
+              caption: 'Click the keys to record a new shortcut',
               palette: palette,
-              child: _ShortcutKeys(['⇧', '⌘', 'C'], palette: palette),
+              child: _HotkeyKeys(
+                keys: controller.snapshot.openShortcut,
+                palette: palette,
+                onTap: controller.channel.recordOpenShortcut,
+              ),
             ),
             _PrefRow(
               label: 'Search clips and bookmarks',

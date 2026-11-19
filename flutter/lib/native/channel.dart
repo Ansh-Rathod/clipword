@@ -21,6 +21,7 @@ class ClipwordChannel {
   final _newFolder = StreamController<Map<Object?, Object?>>.broadcast();
   final _renameFolder = StreamController<Map<Object?, Object?>>.broadcast();
   final _menuTracking = StreamController<bool>.broadcast();
+  final _paletteKey = StreamController<void>.broadcast();
 
   Stream<ClipSnapshot> get snapshots => _snapshot.stream;
   Stream<String> get windowModes => _windowMode.stream;
@@ -29,6 +30,7 @@ class ClipwordChannel {
   Stream<Map<Object?, Object?>> get newFolders => _newFolder.stream;
   Stream<Map<Object?, Object?>> get renameFolders => _renameFolder.stream;
   Stream<bool> get menuTracking => _menuTracking.stream;
+  Stream<void> get paletteKeys => _paletteKey.stream;
 
   Future<dynamic> _onMethod(MethodCall call) async {
     switch (call.method) {
@@ -47,6 +49,8 @@ class ClipwordChannel {
         _renameFolder.add(Map<Object?, Object?>.from(call.arguments as Map));
       case 'onMenuTracking':
         _menuTracking.add(call.arguments as bool);
+      case 'onPaletteKey':
+        _paletteKey.add(null);
     }
   }
 
@@ -214,6 +218,9 @@ class ClipwordChannel {
   Future<void> setSettingsSection(String section) =>
       _methods.invokeMethod('setSettingsSection', {'section': section});
 
+  Future<void> recordOpenShortcut() =>
+      _methods.invokeMethod('recordOpenShortcut');
+
   void listenNativeEvents() {
     _events.receiveBroadcastStream().listen((event) {
       if (event is! Map) return;
@@ -225,6 +232,8 @@ class ClipwordChannel {
         _windowMode.add(payload);
       } else if (type == 'menuTracking' && payload is bool) {
         _menuTracking.add(payload);
+      } else if (type == 'paletteKey') {
+        _paletteKey.add(null);
       }
     });
   }

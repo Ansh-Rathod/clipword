@@ -168,6 +168,25 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.syncAppearance()
+                self?.emitSnapshot()
+            }
+        }
+        DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("AppleColorPreferencesChangedNotification"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.emitSnapshot()
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSColor.systemColorsDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.emitSnapshot()
             }
         }
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
@@ -226,6 +245,12 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         if let value = UserDefaults.clipword.object(forKey: "KeyboardShortcuts_openClipword") {
             UserDefaults.standard.set(value, forKey: "KeyboardShortcuts_openClipword")
         }
+        if KeyboardShortcuts.getShortcut(for: .openClipword) == nil {
+            KeyboardShortcuts.setShortcut(
+                .init(.c, modifiers: [.command, .shift]),
+                for: .openClipword
+            )
+        }
         KeyboardShortcuts.onKeyUp(for: .openClipword) { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
@@ -242,6 +267,8 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
             }
             if self.focusSettingsIfOpen() { return nil }
             guard self.windowMode == "palette" else { return event }
+            // The opening keystroke is delivered again once we become key.
+            guard Date().timeIntervalSince(self.lastToggleAt) > 0.45 else { return nil }
             self.togglePalette()
             return nil
         }
@@ -464,7 +491,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
                 return
             }
             let now = Date()
-            guard now.timeIntervalSince(lastToggleAt) > 0.3 else { return }
+            guard now.timeIntervalSince(lastToggleAt) > 0.5 else { return }
             lastToggleAt = now
             hidePalette()
             return
@@ -494,12 +521,21 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
             self.positionPalette(window, fromStatusItem: fromStatusItem)
             self.presentPalette(window)
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self, self.showGeneration == generation, self.wantsPalette else { return }
+            if !window.isKeyWindow || !NSApp.isActive {
+                self.presentPalette(window)
+            }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             guard let self, self.showGeneration == generation else { return }
-            if self.wantsPalette, window.isVisible == false {
+            if self.wantsPalette, window.isVisible == false || !window.isKeyWindow || !NSApp.isActive {
                 self.positionPalette(window, fromStatusItem: fromStatusItem)
                 self.presentPalette(window)
             }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.85) { [weak self] in
+            guard let self, self.showGeneration == generation else { return }
             self.suppressFocusLossHide = false
         }
     }
@@ -507,11 +543,13 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     private func presentPalette(_ window: NSWindow) {
         window.hidesOnDeactivate = false
         window.animationBehavior = .none
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
         focusFlutter(window)
+        notifyPaletteKey()
     }
 
     private func focusFlutter(_ window: NSWindow) {
@@ -519,6 +557,17 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         if let view = window.contentViewController?.view {
             window.makeFirstResponder(view)
         }
+    }
+
+    private func notifyPaletteKey() {
+        events?(["type": "paletteKey", "payload": true])
+        channel?.invokeMethod("onPaletteKey", arguments: true)
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === flutterWindow else { return }
+        guard windowMode == "palette", wantsPalette else { return }
+        notifyPaletteKey()
     }
 
     private func isClickInStatusItem() -> Bool {
@@ -733,9 +782,6 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         guard let button = statusItem?.button else { return }
         let menu = NSMenu()
         menu.autoenablesItems = false
-        menu.addItem(statusItem("Clipboard", "doc.on.clipboard", #selector(openClipboard)))
-        menu.addItem(statusItem("Bookmarks", "bookmark", #selector(openBookmarks)))
-        menu.addItem(.separator())
         menu.addItem(statusItem("Settings…", "gear", #selector(openSettings)))
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Clipword", action: #selector(quitApp), keyEquivalent: "q")
@@ -758,12 +804,6 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         return item
     }
 
-    @objc private func openClipboard() {
-        pendingMenuAction = { [weak self] in self?.showPalette(source: "history", fromStatusItem: true) }
-    }
-    @objc private func openBookmarks() {
-        pendingMenuAction = { [weak self] in self?.showPalette(source: "bookmarks", fromStatusItem: true) }
-    }
     @objc private func openSettings() {
         pendingMenuAction = { [weak self] in self?.showSettings() }
     }
@@ -849,8 +889,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
                 store.toggleBookmark(item)
                 emitSnapshot()
             } else if let bookmark = bookmarkItem(store, args["id"] as? String) {
-                store.deleteBookmark(bookmark)
-                emitSnapshot()
+                mutateList(store: store) { store.deleteBookmark(bookmark) }
             }
             result(nil)
         case "delete":
@@ -874,10 +913,12 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
             let folder = store.createFolder(named: args["name"] as? String ?? "Untitled")
             if let historyID = args["historyId"] as? String, let item = historyItem(store, historyID) {
                 store.bookmark(item, in: folder)
+                emitSnapshot()
             } else if let bookmarkID = args["bookmarkId"] as? String, let item = bookmarkItem(store, bookmarkID) {
-                store.moveBookmark(item, to: folder)
+                mutateList(store: store) { store.moveBookmark(item, to: folder) }
+            } else {
+                emitSnapshot()
             }
-            emitSnapshot()
             result(folder.id.uuidString)
         case "renameFolder":
             if let id = (args["id"] as? String).flatMap(UUID.init(uuidString:)),
@@ -889,8 +930,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         case "deleteFolder":
             if let id = (args["id"] as? String).flatMap(UUID.init(uuidString:)),
                let folder = store.folder(id: id) {
-                store.deleteFolder(folder)
-                emitSnapshot()
+                mutateList(store: store) { store.deleteFolder(folder) }
             }
             result(nil)
         case "bookmarkInFolder":
@@ -903,8 +943,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         case "moveBookmark":
             if let item = bookmarkItem(store, args["bookmarkId"] as? String) {
                 let folder = (args["folderId"] as? String).flatMap(UUID.init(uuidString:)).flatMap(store.folder(id:))
-                store.moveBookmark(item, to: folder)
-                emitSnapshot()
+                mutateList(store: store) { store.moveBookmark(item, to: folder) }
             }
             result(nil)
         case "showItemMenu":
@@ -968,6 +1007,8 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
             settingsSection = args["section"] as? String ?? "general"
             emitSnapshot()
             result(nil)
+        case "recordOpenShortcut":
+            recordOpenShortcut(result: result)
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -991,14 +1032,15 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     private func deleteSelection(store: HistoryStore, args: [String: Any]) {
         let kind = args["kind"] as? String ?? selection?["kind"]
         let id = args["id"] as? String ?? selection?["id"]
-        if kind == "history", let item = historyItem(store, id) {
-            store.delete(item)
-        } else if kind == "bookmark", let item = bookmarkItem(store, id) {
-            store.deleteBookmark(item)
-        } else if kind == "folder", let uuid = id.flatMap(UUID.init(uuidString:)), let folder = store.folder(id: uuid) {
-            store.deleteFolder(folder)
+        mutateList(store: store) {
+            if kind == "history", let item = historyItem(store, id) {
+                store.delete(item)
+            } else if kind == "bookmark", let item = bookmarkItem(store, id) {
+                store.deleteBookmark(item)
+            } else if kind == "folder", let uuid = id.flatMap(UUID.init(uuidString:)), let folder = store.folder(id: uuid) {
+                store.deleteFolder(folder)
+            }
         }
-        emitSnapshot()
     }
 
     private func historyItem(_ store: HistoryStore, _ id: String?) -> HistoryItem? {
@@ -1073,8 +1115,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
             }
             separator()
             add("Delete", "\u{08}", .command) {
-                store.delete(item)
-                self.emitSnapshot()
+                self.mutateList(store: store) { store.delete(item) }
             }
         }
     }
@@ -1097,15 +1138,13 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
             }
             submenu("Move to Folder") { addItem, sep in
                 addItem(item.folder == nil ? "✓ Unfiled" : "Unfiled", "", []) {
-                    store.moveBookmark(item, to: nil)
-                    self.emitSnapshot()
+                    self.mutateList(store: store) { store.moveBookmark(item, to: nil) }
                 }
                 if !folders.isEmpty { sep() }
                 for folder in folders {
                     let title = folder.id == item.folder?.id ? "✓ \(folder.name)" : folder.name
                     addItem(title, "", []) {
-                        store.moveBookmark(item, to: store.folder(id: folder.id))
-                        self.emitSnapshot()
+                        self.mutateList(store: store) { store.moveBookmark(item, to: store.folder(id: folder.id)) }
                     }
                 }
                 sep()
@@ -1114,8 +1153,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
                 }
             }
             add("Remove Bookmark", "\u{08}", .command) {
-                store.deleteBookmark(item)
-                self.emitSnapshot()
+                self.mutateList(store: store) { store.deleteBookmark(item) }
             }
         }
     }
@@ -1137,8 +1175,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
             }
             separator()
             add("Delete Folder", "", []) {
-                store.deleteFolder(folder)
-                self.emitSnapshot()
+                self.mutateList(store: store) { store.deleteFolder(folder) }
             }
         }
     }
@@ -1331,20 +1368,60 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
 
     private func pruneSelection() {
         guard let store = historyStore, let current = selection else { return }
-        let kind = current["kind"]
-        let id = current["id"]
-        let valid: Bool
-        switch kind {
-        case "history":
-            valid = historyItem(store, id) != nil
-        case "bookmark":
-            valid = bookmarkItem(store, id) != nil
-        case "folder":
-            valid = id.flatMap(UUID.init(uuidString:)).flatMap { store.folder(id: $0) } != nil
-        default:
-            valid = false
+        let rows = visibleSelectableRows(store: store)
+        let stillThere = rows.contains { $0["kind"] == current["kind"] && $0["id"] == current["id"] }
+        if stillThere { return }
+        selection = neighborSelection(in: rows, preferring: nil)
+    }
+
+    private func neighborSelection(in rows: [[String: String]], preferring index: Int?) -> [String: String]? {
+        guard !rows.isEmpty else { return nil }
+        guard let index else { return rows.first }
+        return rows[min(max(index, 0), rows.count - 1)]
+    }
+
+    private func selectionIndex(store: HistoryStore) -> Int? {
+        guard let current = selection else { return nil }
+        return visibleSelectableRows(store: store).firstIndex {
+            $0["kind"] == current["kind"] && $0["id"] == current["id"]
         }
-        if !valid { selection = nil }
+    }
+
+    private func retargetSelection(store: HistoryStore, at previousIndex: Int?, followItem: Bool) {
+        let rows = visibleSelectableRows(store: store)
+        if followItem, let current = selection,
+           rows.contains(where: { $0["kind"] == current["kind"] && $0["id"] == current["id"] }) {
+            return
+        }
+        selection = neighborSelection(in: rows, preferring: previousIndex)
+    }
+
+    private func mutateList(store: HistoryStore, followItem: Bool = false, _ body: () -> Void) {
+        let index = selectionIndex(store: store)
+        body()
+        retargetSelection(store: store, at: index, followItem: followItem)
+        emitSnapshot()
+    }
+
+    private func visibleSelectableRows(store: HistoryStore) -> [[String: String]] {
+        if paletteSource == "bookmarks" {
+            let bookmarks = store.bookmarks
+            if store.folders.isEmpty {
+                return bookmarks.map { ["kind": "bookmark", "id": $0.id.uuidString] }
+            }
+            var rows: [[String: String]] = []
+            for folder in store.folders {
+                rows.append(["kind": "folder", "id": folder.id.uuidString])
+                if collapsedFolderIDs.contains(folder.id) { continue }
+                let items = bookmarks.filter { $0.folder?.id == folder.id }
+                rows.append(contentsOf: items.map { ["kind": "bookmark", "id": $0.id.uuidString] })
+            }
+            rows.append(contentsOf: bookmarks.filter { $0.folder == nil }.map {
+                ["kind": "bookmark", "id": $0.id.uuidString]
+            })
+            return rows
+        }
+        return store.displayedItems.map { ["kind": "history", "id": $0.id.uuidString] }
     }
 
     private func persistCollapsedFolders() {
@@ -1379,7 +1456,75 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
             "databaseSize": store.databaseSize,
             "previewCacheSize": LinkPreviewService.cacheSizeDescription,
             "action": store.lastAction.map { ["kind": "\($0.kind)", "itemID": $0.itemID.uuidString, "token": $0.token] } as Any,
+            "accentColor": Self.colorComponents(.controlAccentColor),
+            "accentFill": Self.colorComponents(.selectedContentBackgroundColor),
+            "accentForeground": Self.colorComponents(.alternateSelectedControlTextColor),
+            "openShortcut": Self.openShortcutKeys(),
         ]
+    }
+
+    private static func colorComponents(_ color: NSColor) -> [Double] {
+        var resolved = color
+        NSApp.effectiveAppearance.performAsCurrentDrawingAppearance {
+            resolved = color
+        }
+        guard let rgb = resolved.usingColorSpace(.sRGB) else {
+            return [0, 0.48, 1, 1]
+        }
+        return [
+            rgb.redComponent,
+            rgb.greenComponent,
+            rgb.blueComponent,
+            rgb.alphaComponent,
+        ]
+    }
+
+    private static func openShortcutKeys() -> [String] {
+        let description = KeyboardShortcuts.getShortcut(for: .openClipword)?.description ?? "⇧⌘C"
+        return tokenizeShortcut(description)
+    }
+
+    private static func tokenizeShortcut(_ description: String) -> [String] {
+        let mods: Set<Character> = ["⇧", "⌃", "⌥", "⌘"]
+        var keys: [String] = []
+        var rest = ""
+        for character in description {
+            if mods.contains(character) {
+                keys.append(String(character))
+            } else {
+                rest.append(character)
+            }
+        }
+        let label = rest.trimmingCharacters(in: .whitespaces)
+        if !label.isEmpty { keys.append(label) }
+        return keys.isEmpty ? [description] : keys
+    }
+
+    private func persistOpenShortcut() {
+        let key = "KeyboardShortcuts_openClipword"
+        if let value = UserDefaults.standard.object(forKey: key) {
+            UserDefaults.clipword.set(value, forKey: key)
+        }
+    }
+
+    private func recordOpenShortcut(result: @escaping FlutterResult) {
+        let recorder = KeyboardShortcuts.RecorderCocoa(for: .openClipword)
+        recorder.frame.size = NSSize(width: 180, height: 24)
+        let alert = NSAlert()
+        alert.messageText = "Open Clipword"
+        alert.informativeText = "Click the field and press the shortcut you want to use."
+        alert.accessoryView = recorder
+        alert.addButton(withTitle: "Done")
+        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] _ in
+            self?.persistOpenShortcut()
+            self?.emitSnapshot()
+            result(nil)
+        }
+        if let window = settingsWindow, window.isVisible {
+            alert.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            finish(alert.runModal())
+        }
     }
 
     private func prefsDict() -> [String: Any] {

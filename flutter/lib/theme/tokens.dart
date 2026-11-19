@@ -29,9 +29,17 @@ class ClipTokens {
 /// background, backgroundSecondary, text, selection, loader,
 /// red, orange, yellow, green, blue, purple, magenta.
 class ClipPalette {
-  ClipPalette({required this.dark});
+  ClipPalette({
+    required this.dark,
+    this.systemAccent,
+    this.systemAccentFill,
+    this.systemAccentForeground,
+  });
 
   final bool dark;
+  final Color? systemAccent;
+  final Color? systemAccentFill;
+  final Color? systemAccentForeground;
 
   Color get background =>
       dark ? const Color(0xFF1A1A1A) : const Color(0xFFFFFFFF);
@@ -78,7 +86,10 @@ class ClipPalette {
       dark ? const Color(0x59333333) : const Color(0x291A1A1A);
   Color get toggleOff =>
       dark ? const Color(0x66333333) : const Color(0x291A1A1A);
-  Color get accent => blue;
+  Color get accent => systemAccent ?? blue;
+  Color get accentFill => systemAccentFill ?? accent;
+  Color get onAccent =>
+      systemAccentForeground ?? const Color(0xFFFFFFFF);
   Color get success => green;
   Color get destructive => red;
   Color get gray => text.withValues(alpha: 0.45);

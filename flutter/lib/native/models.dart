@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 class ClipPrefs {
   ClipPrefs({
     this.launchAtLogin = false,
@@ -226,6 +228,32 @@ class ClipSnapshot {
       (json['action'] as Map<Object?, Object?>?)?['token'] as int? ?? 0;
   String? get actionKind =>
       (json['action'] as Map<Object?, Object?>?)?['kind'] as String?;
+
+  Color? get accentColor => _color(json['accentColor']);
+  Color? get accentFill => _color(json['accentFill']);
+  Color? get accentForeground => _color(json['accentForeground']);
+
+  static Color? _color(Object? raw) {
+    if (raw is! List || raw.length < 3) return null;
+    double component(int i) {
+      if (i >= raw.length) return i == 3 ? 1 : 0;
+      return (raw[i] as num?)?.toDouble() ?? (i == 3 ? 1 : 0);
+    }
+
+    return Color.fromARGB(
+      (component(3) * 255).round().clamp(0, 255),
+      (component(0) * 255).round().clamp(0, 255),
+      (component(1) * 255).round().clamp(0, 255),
+      (component(2) * 255).round().clamp(0, 255),
+    );
+  }
+
+  List<String> get openShortcut {
+    final raw = json['openShortcut'];
+    if (raw is! List) return const ['⇧', '⌘', 'C'];
+    final keys = raw.map((item) => '$item').where((item) => item.isNotEmpty).toList();
+    return keys.isEmpty ? const ['⇧', '⌘', 'C'] : keys;
+  }
 }
 
 const categoryLabels = {

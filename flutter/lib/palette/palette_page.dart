@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart' show Icons;
@@ -35,6 +37,7 @@ class _PalettePageState extends State<PalettePage> {
   String _listSource = '';
   String? _overlay;
   bool _restoringScroll = false;
+  StreamSubscription<void>? _paletteKey;
 
   ClipwordController get c => widget.controller;
   ClipPalette get p => widget.palette;
@@ -49,7 +52,20 @@ class _PalettePageState extends State<PalettePage> {
     _listSource = c.snapshot.source;
     _overlay = c.overlay;
     c.addListener(_onController);
+    _paletteKey = c.channel.paletteKeys.listen((_) {
+      if (!mounted) return;
+      _refocusPalette();
+    });
     _focusSearch();
+  }
+
+  void _refocusPalette() {
+    if (c.windowMode != 'palette' || c.dialogOpen) return;
+    if (c.listFocused) {
+      if (!_pageFocus.hasFocus) _focusList();
+    } else if (!_searchFocus.hasFocus) {
+      _focusSearch();
+    }
   }
 
   KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
@@ -238,7 +254,9 @@ class _PalettePageState extends State<PalettePage> {
     _syncSearch();
     if (c.windowMode == 'palette' && _windowMode != 'palette') {
       _focusSearch();
+      _holdAndRestoreScroll();
     } else if (c.windowMode != 'palette' && _windowMode == 'palette') {
+      _saveScroll();
       _searchFocus.unfocus();
     }
     _windowMode = c.windowMode;
@@ -250,6 +268,23 @@ class _PalettePageState extends State<PalettePage> {
       _searchFocus.unfocus();
     }
     _overlay = c.overlay;
+    _recoverScrollIfReset();
+  }
+
+  void _holdAndRestoreScroll() {
+    c.holdScrollUpdates = true;
+    _restoringScroll = true;
+    _restoreScrollSoon(attempts: 4);
+  }
+
+  void _recoverScrollIfReset() {
+    if (c.windowMode != 'palette' || _restoringScroll) return;
+    if (!_scrollController.hasClients) return;
+    final saved = c.listScrollOffset;
+    if (saved <= 1) return;
+    if (_scrollController.offset > 1) return;
+    if (_scrollController.position.maxScrollExtent < 1) return;
+    _holdAndRestoreScroll();
   }
 
   void _restoreFocusAfterOverlay() {
@@ -362,6 +397,7 @@ class _PalettePageState extends State<PalettePage> {
   void dispose() {
     _saveScroll();
     c.removeListener(_onController);
+    _paletteKey?.cancel();
     _search.dispose();
     _searchFocus.dispose();
     _pageFocus.dispose();
@@ -753,7 +789,7 @@ class _PalettePageState extends State<PalettePage> {
               final emphasized = selected && c.listFocused;
               Color? fill;
               if (emphasized) {
-                fill = p.accent;
+                fill = p.accentFill;
               } else if (selected) {
                 fill = p.selectedIdle;
               }
@@ -798,7 +834,7 @@ class _PalettePageState extends State<PalettePage> {
   }
 
   Widget _row(PaletteEntry entry, bool emphasized) {
-    final color = emphasized ? const Color(0xFFFFFFFF) : p.label;
+    final color = emphasized ? p.onAccent : p.label;
     if (entry.kind == 'folder') {
       return Row(
         children: [
@@ -822,7 +858,7 @@ class _PalettePageState extends State<PalettePage> {
             '${entry.count} items',
             style: TextStyle(
               fontSize: 11,
-              color: emphasized ? const Color(0xCCFFFFFF) : p.secondary,
+              color: emphasized ? p.onAccent.withValues(alpha: 0.8) : p.secondary,
             ),
           ),
         ],
@@ -858,14 +894,14 @@ class _PalettePageState extends State<PalettePage> {
           SymbolIcon(
             'bookmark.fill',
             size: 10,
-            color: emphasized ? const Color(0xF2FFFFFF) : p.accent,
+            color: emphasized ? p.onAccent.withValues(alpha: 0.95) : p.accent,
           ),
         if (pinned) ...[
           const SizedBox(width: 4),
           SymbolIcon(
             'pin.fill',
             size: 10,
-            color: emphasized ? const Color(0xF2FFFFFF) : p.orange,
+            color: emphasized ? p.onAccent.withValues(alpha: 0.95) : p.orange,
           ),
         ],
       ],
