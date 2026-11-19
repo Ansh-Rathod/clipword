@@ -7,10 +7,14 @@ class MainFlutterWindow: NSWindow {
 
     override func awakeFromNib() {
         isRestorable = false
+        animationBehavior = .none
+        hidesOnDeactivate = false
         orderOut(nil)
 
         let flutterViewController = FlutterViewController()
+        flutterViewController.backgroundColor = .clear
         flutterViewController.view.wantsLayer = true
+        flutterViewController.view.layer?.isOpaque = false
         flutterViewController.view.layer?.backgroundColor = NSColor.clear.cgColor
         let windowFrame = self.frame
         self.contentViewController = flutterViewController

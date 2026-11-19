@@ -32,7 +32,7 @@ class ClipwordApp extends StatelessWidget {
             final dark = MediaQuery.platformBrightnessOf(context) == Brightness.dark;
             final palette = ClipPalette(dark: dark);
             return ColoredBox(
-              color: settingsWindow ? palette.window : const Color(0x00000000),
+              color: const Color(0x00000000),
               child: settingsWindow
                   ? SettingsPage(controller: controller, palette: palette)
                   : PalettePage(controller: controller, palette: palette),

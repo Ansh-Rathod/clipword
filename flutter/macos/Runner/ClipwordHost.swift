@@ -1,6 +1,7 @@
 import AppKit
 import ClipwordCore
 import Cocoa
+import QuartzCore
 import Defaults
 import FlutterMacOS
 import KeyboardShortcuts
@@ -12,12 +13,31 @@ private final class KeyablePanel: NSPanel {
     override var canBecomeMain: Bool { true }
 }
 
+private final class SettingsToolbarDelegate: NSObject, NSToolbarDelegate {
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.flexibleSpace]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.flexibleSpace]
+    }
+
+    func toolbar(
+        _ toolbar: NSToolbar,
+        itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+        willBeInsertedIntoToolbar flag: Bool
+    ) -> NSToolbarItem? {
+        NSToolbarItem(itemIdentifier: itemIdentifier)
+    }
+}
+
 @MainActor
 final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     static let shared = ClipwordHost()
 
     static let paletteSize = NSSize(width: 720, height: 520)
-    static let settingsSize = NSSize(width: 820, height: 580)
+    static let settingsMinSize = NSSize(width: 640, height: 420)
+    static let settingsSize = NSSize(width: 640, height: 580)
     static let cornerRadius: CGFloat = 24
     static let pageSize = 80
 
@@ -35,6 +55,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     private var settingsViewController: FlutterViewController?
     private var settingsEngine: FlutterEngine?
     private lazy var settingsStreamHandler = SettingsStreamHandler(host: self)
+    private let settingsToolbarDelegate = SettingsToolbarDelegate()
     private var settingsSection = "general"
     private var windowMode = "hidden"
     private var paletteSource = "history"
@@ -52,7 +73,10 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         }
     }
     private var suppressFocusLossHide = false
+    private var wantsPalette = false
+    private var showGeneration = 0
     private var lastLeftClick = Date.distantPast
+    private var paletteMouseAnchor: NSPoint?
     private var pasteStackMonitor: Any?
     private var localHotkeyMonitor: Any?
     private var outsideClickMonitor: Any?
@@ -98,10 +122,22 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
             BookmarkItem.self,
             BookmarkFolder.self,
         ])
-        let url = AppSupport.directory
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        let config = ModelConfiguration(url: AppSupport.storeURL)
-        let container = try! ModelContainer(for: schema, configurations: config)
+        try? FileManager.default.createDirectory(at: AppSupport.directory, withIntermediateDirectories: true)
+        let container: ModelContainer
+        do {
+            container = try ModelContainer(
+                for: schema,
+                configurations: ModelConfiguration(url: AppSupport.storeURL)
+            )
+        } catch {
+            // Native Clipword stores image blobs as Core Data external references.
+            // SwiftData cannot infer that mapping, so quarantine the old store and start fresh.
+            Self.quarantineIncompatibleStore()
+            container = try! ModelContainer(
+                for: schema,
+                configurations: ModelConfiguration(url: AppSupport.storeURL)
+            )
+        }
         self.container = container
         let store = HistoryStore(modelContext: container.mainContext)
         historyStore = store
@@ -125,11 +161,22 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
                 self?.hideBecauseFocusLeft()
             }
         }
+        DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.syncAppearance()
+            }
+        }
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                guard self.windowMode == "palette", !self.suppressFocusLossHide else { return }
-                self.hidePalette()
+                guard self.windowMode == "palette", self.wantsPalette, !self.suppressFocusLossHide else { return }
+                if self.isSettingsVisible { return }
+                if self.isClickInStatusItem() { return }
+                self.hideBecauseFocusLeft()
             }
         }
         NotificationCenter.default.addObserver(
@@ -152,6 +199,24 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         }
     }
 
+    private static func quarantineIncompatibleStore() {
+        let fm = FileManager.default
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let backupDir = AppSupport.directory.appendingPathComponent("NativeStoreBackup-\(stamp)", isDirectory: true)
+        try? fm.createDirectory(at: backupDir, withIntermediateDirectories: true)
+        let names = [
+            "Storage.sqlite",
+            "Storage.sqlite-wal",
+            "Storage.sqlite-shm",
+            ".Storage_SUPPORT",
+        ]
+        for name in names {
+            let src = AppSupport.directory.appendingPathComponent(name)
+            guard fm.fileExists(atPath: src.path) else { continue }
+            try? fm.moveItem(at: src, to: backupDir.appendingPathComponent(name))
+        }
+    }
+
     private func setMenuTracking(_ tracking: Bool) {
         events?(["type": "menuTracking", "payload": tracking])
         channel?.invokeMethod("onMenuTracking", arguments: tracking)
@@ -163,18 +228,20 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         }
         KeyboardShortcuts.onKeyUp(for: .openClipword) { [weak self] in
             Task { @MainActor in
-                self?.togglePalette()
+                guard let self else { return }
+                if self.focusSettingsIfOpen() { return }
+                self.togglePalette()
             }
         }
         localHotkeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, self.windowMode == "palette" || self.settingsWindow?.isVisible == true else {
-                return event
-            }
+            guard let self else { return event }
             guard let pressed = KeyboardShortcuts.Shortcut(event: event),
                   pressed == KeyboardShortcuts.getShortcut(for: .openClipword)
             else {
                 return event
             }
+            if self.focusSettingsIfOpen() { return nil }
+            guard self.windowMode == "palette" else { return event }
             self.togglePalette()
             return nil
         }
@@ -202,6 +269,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         window.isReleasedWhenClosed = false
         window.isRestorable = false
         window.hidesOnDeactivate = false
+        window.animationBehavior = .none
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         applyPaletteChrome(window)
         let screen = NSScreen.main ?? NSScreen.screens[0]
@@ -218,6 +286,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         window.isOpaque = false
         window.hasShadow = true
         window.level = .floating
+        syncAppearance(of: window)
         window.isMovableByWindowBackground = false
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
@@ -227,67 +296,222 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         window.contentView?.layer?.cornerRadius = Self.cornerRadius
         window.contentView?.layer?.cornerCurve = .continuous
         window.contentView?.layer?.masksToBounds = true
+        if let controller = window.contentViewController as? FlutterViewController {
+            controller.backgroundColor = .clear
+            makeViewTransparent(controller.view)
+            installPaletteVibrancy(controller)
+        }
         if let panel = window as? NSPanel {
             panel.isFloatingPanel = true
         }
     }
 
-    private func applySettingsChrome(_ window: NSWindow) {
+    private func installPaletteVibrancy(_ controller: FlutterViewController) {
+        let host = controller.view
+        host.wantsLayer = true
+        host.layer?.backgroundColor = NSColor.clear.cgColor
+        host.layer?.cornerRadius = Self.cornerRadius
+        host.layer?.cornerCurve = .continuous
+        host.layer?.masksToBounds = true
+        host.subviews
+            .filter { $0.identifier?.rawValue.hasPrefix("clipword.vibrancy.palette") == true }
+            .forEach { $0.removeFromSuperview() }
+
+        let blur = NSVisualEffectView(frame: host.bounds)
+        blur.identifier = NSUserInterfaceItemIdentifier("clipword.vibrancy.palette")
+        blur.autoresizingMask = [.width, .height]
+        configureVibrancy(blur, material: paletteMaterial())
+        blur.wantsLayer = true
+        blur.layer?.cornerRadius = Self.cornerRadius
+        blur.layer?.cornerCurve = .continuous
+        host.addSubview(blur, positioned: .below, relativeTo: nil)
+    }
+
+    private func applySettingsChrome(_ window: NSWindow, resetFrame: Bool = false) {
         window.level = .normal
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
         window.title = "Settings"
-        window.titleVisibility = .visible
-        window.titlebarAppearsTransparent = false
-        window.backgroundColor = .windowBackgroundColor
-        window.isOpaque = true
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        if window.toolbar == nil {
+            let toolbar = NSToolbar(identifier: "clipword.settings")
+            toolbar.delegate = settingsToolbarDelegate
+            toolbar.displayMode = .iconOnly
+            toolbar.showsBaselineSeparator = false
+            toolbar.allowsUserCustomization = false
+            window.toolbar = toolbar
+        }
+        window.toolbarStyle = .unified
+        window.titlebarSeparatorStyle = .none
+        window.backgroundColor = .clear
+        syncAppearance(of: window)
+        window.isOpaque = false
         window.hasShadow = true
+        window.isMovableByWindowBackground = true
         window.standardWindowButton(.closeButton)?.isHidden = false
         window.standardWindowButton(.miniaturizeButton)?.isHidden = false
         window.standardWindowButton(.zoomButton)?.isHidden = false
-        window.setContentSize(Self.settingsSize)
         window.contentView?.layer?.cornerRadius = 0
-        window.center()
+        window.contentView?.layer?.masksToBounds = false
+        settingsViewController?.backgroundColor = .clear
+        if let controller = settingsViewController ?? window.contentViewController as? FlutterViewController {
+            controller.backgroundColor = .clear
+            makeViewTransparent(controller.view)
+            installSettingsVibrancy(controller)
+        }
+        if resetFrame {
+            window.setContentSize(Self.settingsSize)
+            window.center()
+        }
     }
 
-    func togglePalette(source: String? = nil) {
-        let now = Date()
-        guard now.timeIntervalSince(lastToggleAt) > 0.2 else { return }
-        lastToggleAt = now
-        if windowMode == "palette" {
+    private func installSettingsVibrancy(_ controller: FlutterViewController) {
+        let host = controller.view
+        host.wantsLayer = true
+        host.layer?.isOpaque = false
+        host.layer?.backgroundColor = NSColor.clear.cgColor
+        controller.backgroundColor = .clear
+        host.subviews
+            .filter { $0.identifier?.rawValue.hasPrefix("clipword.vibrancy") == true }
+            .forEach { $0.removeFromSuperview() }
+
+        let blur = NSVisualEffectView(frame: host.bounds)
+        blur.identifier = NSUserInterfaceItemIdentifier("clipword.vibrancy.settings")
+        blur.autoresizingMask = [.width, .height]
+        configureVibrancy(blur, material: .underWindowBackground)
+        host.addSubview(blur, positioned: .below, relativeTo: nil)
+    }
+
+    private func configureVibrancy(_ view: NSVisualEffectView, material: NSVisualEffectView.Material) {
+        view.material = material
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.appearance = NSApp.effectiveAppearance
+    }
+
+    private func paletteMaterial() -> NSVisualEffectView.Material {
+        isDarkAppearance ? .hudWindow : .menu
+    }
+
+    private var isDarkAppearance: Bool {
+        NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+
+    private func makeViewTransparent(_ view: NSView) {
+        if view is NSVisualEffectView { return }
+        view.wantsLayer = true
+        view.layer?.isOpaque = false
+        view.layer?.backgroundColor = NSColor.clear.cgColor
+        if let metal = view.layer as? CAMetalLayer {
+            metal.isOpaque = false
+        }
+        for subview in view.subviews {
+            makeViewTransparent(subview)
+        }
+    }
+
+    private func syncAppearance(of window: NSWindow? = nil) {
+        let appearance = NSApp.effectiveAppearance
+        let windows = [window, flutterWindow, settingsWindow].compactMap { $0 }
+        let unique = windows.reduce(into: [NSWindow]()) { list, item in
+            if !list.contains(where: { $0 === item }) { list.append(item) }
+        }
+        for item in unique {
+            item.appearance = appearance
+            item.isOpaque = false
+            item.backgroundColor = .clear
+            item.contentView?.appearance = appearance
+            item.contentViewController?.view.appearance = appearance
+            if let view = item.contentViewController?.view {
+                makeViewTransparent(view)
+            }
+            item.contentViewController?.view.subviews
+                .compactMap { $0 as? NSVisualEffectView }
+                .forEach { effect in
+                    effect.appearance = appearance
+                    if effect.identifier?.rawValue == "clipword.vibrancy.palette" {
+                        effect.material = paletteMaterial()
+                    }
+                }
+        }
+    }
+
+    var isSettingsVisible: Bool {
+        guard let window = settingsWindow else { return false }
+        return window.isVisible || window.isMiniaturized
+    }
+
+    @discardableResult
+    func focusSettingsIfOpen() -> Bool {
+        guard isSettingsVisible, let window = settingsWindow else { return false }
+        NSApp.setActivationPolicy(.regular)
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+        return true
+    }
+
+    func togglePalette(source: String? = nil, fromStatusItem: Bool = false) {
+        if focusSettingsIfOpen() { return }
+        let paletteVisible = windowMode == "palette" && flutterWindow?.isVisible == true
+        if paletteVisible {
             if let source, source != paletteSource {
                 paletteSource = source
                 emitSnapshot()
                 return
             }
+            let now = Date()
+            guard now.timeIntervalSince(lastToggleAt) > 0.3 else { return }
+            lastToggleAt = now
             hidePalette()
             return
         }
-        showPalette(source: source)
+        lastToggleAt = Date()
+        showPalette(source: source, fromStatusItem: fromStatusItem)
     }
 
     func showPalette(source: String? = nil, fromStatusItem: Bool = false) {
-        NSApp.setActivationPolicy(.accessory)
+        if focusSettingsIfOpen() { return }
         if let source { paletteSource = source }
         guard let window = flutterWindow else { return }
+        paletteMouseAnchor = NSEvent.mouseLocation
         PasteSession.captureFrontmost()
+        showGeneration += 1
+        let generation = showGeneration
+        wantsPalette = true
         suppressFocusLossHide = true
         windowMode = "palette"
         applyPaletteChrome(window)
         positionPalette(window, fromStatusItem: fromStatusItem)
-        window.makeKeyAndOrderFront(nil)
-        window.orderFrontRegardless()
-        NSApp.activate(ignoringOtherApps: true)
-        focusFlutter(window)
+        presentPalette(window)
         emitWindowMode()
         emitSnapshot()
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+            guard let self, self.showGeneration == generation else { return }
             self.positionPalette(window, fromStatusItem: fromStatusItem)
-            self.focusFlutter(window)
+            self.presentPalette(window)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            self?.suppressFocusLossHide = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self, self.showGeneration == generation else { return }
+            if self.wantsPalette, window.isVisible == false {
+                self.positionPalette(window, fromStatusItem: fromStatusItem)
+                self.presentPalette(window)
+            }
+            self.suppressFocusLossHide = false
         }
+    }
+
+    private func presentPalette(_ window: NSWindow) {
+        window.hidesOnDeactivate = false
+        window.animationBehavior = .none
+        window.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        focusFlutter(window)
     }
 
     private func focusFlutter(_ window: NSWindow) {
@@ -297,10 +521,18 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         }
     }
 
+    private func isClickInStatusItem() -> Bool {
+        guard let button = statusItem?.button, let buttonWindow = button.window else { return false }
+        let rect = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        return NSMouseInRect(NSEvent.mouseLocation, rect, false)
+    }
+
     func showSettings(section: String = "general") {
         settingsSection = section
         hidePalette()
+        NSApp.setActivationPolicy(.regular)
         if let window = settingsWindow {
+            applySettingsChrome(window, resetFrame: false)
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             emitSnapshot()
@@ -315,20 +547,22 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
 
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.settingsSize),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Settings"
         window.isReleasedWhenClosed = false
         window.isRestorable = false
-        window.minSize = NSSize(width: 640, height: 420)
+        window.minSize = Self.settingsMinSize
+        window.tabbingMode = .disallowed
+        settingsController.backgroundColor = .clear
         window.contentViewController = settingsController
         window.delegate = self
-        applySettingsChrome(window)
         settingsEngine = engine
         settingsViewController = settingsController
         settingsWindow = window
+        applySettingsChrome(window, resetFrame: true)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         emitSnapshot()
@@ -347,6 +581,10 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     }
 
     func hidePalette() {
+        showGeneration += 1
+        wantsPalette = false
+        suppressFocusLossHide = false
+        paletteMouseAnchor = nil
         if let window = flutterWindow {
             window.makeFirstResponder(nil)
             window.orderOut(nil)
@@ -356,58 +594,51 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     }
 
     private func hideBecauseFocusLeft() {
-        guard !suppressFocusLossHide else { return }
+        guard wantsPalette, !suppressFocusLossHide else { return }
         guard windowMode == "palette" else { return }
         hidePalette()
     }
 
     func windowDidResignKey(_ notification: Notification) {
         guard (notification.object as? NSWindow) === flutterWindow else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            guard self.windowMode == "palette" else { return }
-            if self.flutterWindow?.attachedSheet != nil { return }
-            guard !self.suppressFocusLossHide else { return }
-            guard !NSApp.isActive else { return }
-            self.hideBecauseFocusLeft()
-        }
+        if flutterWindow?.attachedSheet != nil { return }
+        guard !NSApp.isActive else { return }
+        hideBecauseFocusLeft()
     }
 
     private func positionPalette(_ window: NSWindow, fromStatusItem: Bool) {
         let size = Self.paletteSize
-        let screen = screenForPlacement(preferStatusItem: fromStatusItem)
+        let position = Defaults[.popupPosition]
+        let preferStatusItem = position == .menuBar || (fromStatusItem && position == .lastPosition)
+        let screen = screenForPlacement(preferStatusItem: preferStatusItem)
         let visible = screen.visibleFrame
         let frame: NSRect
-        if fromStatusItem, let nearMenu = frameNearStatusItem(size: size) {
-            frame = nearMenu
-        } else {
-            switch Defaults[.popupPosition] {
-            case .cursor:
-                let mouse = NSEvent.mouseLocation
-                var x = mouse.x - size.width / 2
-                var y = mouse.y - size.height - 20
-                x = min(max(x, visible.minX + 8), visible.maxX - size.width - 8)
-                y = min(max(y, visible.minY + 8), visible.maxY - size.height - 8)
-                frame = NSRect(x: x, y: y, width: size.width, height: size.height)
-            case .menuBar:
-                frame = frameNearStatusItem(size: size) ?? NSRect(
-                    x: visible.maxX - size.width - 20,
-                    y: visible.maxY - size.height - 12,
-                    width: size.width,
-                    height: size.height
-                )
-            case .lastPosition:
-                let stored = NSRectFromString(Defaults[.popupLastFrame])
-                if stored.width > 0 && stored.height > 0 {
-                    frame = clamped(stored, size: size, to: visible)
-                } else {
-                    frame = centeredFrame(size: size, on: visible)
-                }
-            case .center:
+        switch position {
+        case .cursor:
+            let mouse = paletteMouseAnchor ?? NSEvent.mouseLocation
+            var x = mouse.x - size.width / 2
+            var y = mouse.y - size.height - 20
+            x = min(max(x, visible.minX + 8), visible.maxX - size.width - 8)
+            y = min(max(y, visible.minY + 8), visible.maxY - size.height - 8)
+            frame = NSRect(x: x, y: y, width: size.width, height: size.height)
+        case .menuBar:
+            frame = frameNearStatusItem(size: size) ?? NSRect(
+                x: visible.maxX - size.width - 20,
+                y: visible.maxY - size.height - 12,
+                width: size.width,
+                height: size.height
+            )
+        case .lastPosition:
+            let stored = NSRectFromString(Defaults[.popupLastFrame])
+            if stored.width > 0 && stored.height > 0 {
+                frame = clamped(stored, size: size, to: visible)
+            } else {
                 frame = centeredFrame(size: size, on: visible)
             }
+        case .center:
+            frame = centeredFrame(size: size, on: visible)
         }
-        window.setFrame(frame, display: true)
+        window.setFrame(frame, display: true, animate: false)
     }
 
     private func screenForPlacement(preferStatusItem: Bool) -> NSScreen {
@@ -455,6 +686,9 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if sender === settingsWindow {
             sender.orderOut(nil)
+            if windowMode != "palette" {
+                NSApp.setActivationPolicy(.accessory)
+            }
             return false
         }
         sender.orderOut(nil)
@@ -478,7 +712,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
             button.image?.isTemplate = true
             button.target = self
             button.action = #selector(statusItemClicked(_:))
-            button.sendAction(on: [.leftMouseDown, .rightMouseDown])
+            button.sendAction(on: [.leftMouseDown, .leftMouseUp, .rightMouseDown])
         }
         statusItem = item
     }
@@ -492,7 +726,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         let now = Date()
         if now.timeIntervalSince(lastLeftClick) < 0.3 { return }
         lastLeftClick = now
-        togglePalette()
+        togglePalette(fromStatusItem: true)
     }
 
     private func showStatusMenu() {
@@ -525,10 +759,10 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     }
 
     @objc private func openClipboard() {
-        pendingMenuAction = { [weak self] in self?.showPalette(source: "history") }
+        pendingMenuAction = { [weak self] in self?.showPalette(source: "history", fromStatusItem: true) }
     }
     @objc private func openBookmarks() {
-        pendingMenuAction = { [weak self] in self?.showPalette(source: "bookmarks") }
+        pendingMenuAction = { [weak self] in self?.showPalette(source: "bookmarks", fromStatusItem: true) }
     }
     @objc private func openSettings() {
         pendingMenuAction = { [weak self] in self?.showSettings() }

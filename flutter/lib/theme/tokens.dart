@@ -11,31 +11,75 @@ class ClipTokens {
   static const listMin = 240.0;
   static const listIdeal = 300.0;
   static const listMax = 360.0;
-  static const settingsSidebar = 196.0;
+  static const settingsSidebar = 200.0;
+  static const settingsTitlebar = 52.0;
+  static const settingsGroupRadius = 10.0;
   static const rowRadius = 6.0;
   static const keycapMin = 18.0;
   static const keycapRadius = 5.0;
 
-  static const accent = Color(0xFF0A84FF);
-  static const pin = Color(0xFFFF9F0A);
-  static const bookmark = Color(0xFF0A84FF);
-  static const success = Color(0xFF30D158);
+  /// Raycast loader / brand red.
+  static const accent = Color(0xFFFF6363);
+  static const pin = Color(0xFFFCA72F);
+  static const bookmark = Color(0xFF0091FF);
+  static const success = Color(0xFF28CD41);
 }
 
+/// Default Raycast Light / Dark theme slots:
+/// background, backgroundSecondary, text, selection, loader,
+/// red, orange, yellow, green, blue, purple, magenta.
 class ClipPalette {
   ClipPalette({required this.dark});
 
   final bool dark;
 
-  Color get label => dark ? const Color(0xFFFFFFFF) : const Color(0xFF000000);
-  Color get secondary => dark ? const Color(0x99EBEBF5) : const Color(0x993C3C43);
-  Color get tertiary => dark ? const Color(0x4DEBEBF5) : const Color(0x4D3C3C43);
-  Color get panel => dark
-      ? const Color(0x99000000)
-      : const Color(0x99FFFFFF);
-  Color get window => dark ? const Color(0xFF1E1E1E) : const Color(0xFFF2F2F7);
-  Color get divider => dark ? const Color(0x33FFFFFF) : const Color(0x33000000);
-  Color get hover => label.withValues(alpha: 0.07);
-  Color get selectedIdle => label.withValues(alpha: 0.10);
-  Color get chipFill => label.withValues(alpha: ClipTokens.controlFill);
+  Color get background =>
+      dark ? const Color(0xFF1A1A1A) : const Color(0xFFFFFFFF);
+  Color get backgroundSecondary =>
+      dark ? const Color(0xFF242424) : const Color(0xFFF4F4F4);
+  Color get text =>
+      dark ? const Color(0xFFFFFFFF) : const Color(0xFF1A1A1A);
+  Color get selection =>
+      dark ? const Color(0xFF333333) : const Color(0xFFE8E8E8);
+  Color get loader => const Color(0xFFFF6363);
+
+  Color get red =>
+      dark ? const Color(0xFFFF6363) : const Color(0xFFFF3B30);
+  Color get orange =>
+      dark ? const Color(0xFFFCA72F) : const Color(0xFFFF9500);
+  Color get yellow =>
+      dark ? const Color(0xFFFFD60A) : const Color(0xFFFFCC00);
+  Color get green =>
+      dark ? const Color(0xFF34C759) : const Color(0xFF28CD41);
+  Color get blue =>
+      dark ? const Color(0xFF5AC8FA) : const Color(0xFF0091FF);
+  Color get purple =>
+      dark ? const Color(0xFFBF5AF2) : const Color(0xFFAF52DE);
+  Color get magenta =>
+      dark ? const Color(0xFFFF375F) : const Color(0xFFFF2D55);
+
+  Color get label => text;
+  Color get secondary => text.withValues(alpha: 0.55);
+  Color get tertiary => text.withValues(alpha: 0.32);
+  Color get panel => const Color(0x00000000);
+  Color get window => const Color(0x00000000);
+  Color get sidebar => const Color(0x00000000);
+
+  Color get grouped =>
+      dark ? const Color(0x28FFFFFF) : const Color(0x3DFFFFFF);
+  Color get control =>
+      dark ? const Color(0x66333333) : const Color(0x3D1A1A1A);
+  Color get chipFill =>
+      dark ? const Color(0x66333333) : const Color(0x141A1A1A);
+  Color get divider => text.withValues(alpha: dark ? 0.12 : 0.08);
+  Color get hover =>
+      dark ? const Color(0x33333333) : const Color(0x141A1A1A);
+  Color get selectedIdle =>
+      dark ? const Color(0x59333333) : const Color(0x291A1A1A);
+  Color get toggleOff =>
+      dark ? const Color(0x66333333) : const Color(0x291A1A1A);
+  Color get accent => blue;
+  Color get success => green;
+  Color get destructive => red;
+  Color get gray => text.withValues(alpha: 0.45);
 }

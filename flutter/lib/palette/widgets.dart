@@ -1,6 +1,5 @@
 import 'dart:typed_data';
 
-import 'package:cupertino_native_better/cupertino_native_better.dart';
 import 'package:flutter/material.dart' show IconData, Icons;
 import 'package:flutter/widgets.dart';
 
@@ -163,7 +162,7 @@ class FilterChipButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = emphasized ? ClipTokens.accent : palette.label;
+    final color = emphasized ? palette.accent : palette.label;
     return MouseRegion(
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
@@ -171,7 +170,7 @@ class FilterChipButton extends StatelessWidget {
         child: DecoratedBox(
           decoration: BoxDecoration(
             color: emphasized
-                ? ClipTokens.accent.withValues(alpha: 0.16)
+                ? palette.accent.withValues(alpha: 0.16)
                 : palette.chipFill,
             borderRadius: BorderRadius.circular(999),
           ),
@@ -194,7 +193,7 @@ class FilterChipButton extends StatelessWidget {
                   Icons.keyboard_arrow_down,
                   size: 14,
                   color: emphasized
-                      ? ClipTokens.accent.withValues(alpha: 0.8)
+                      ? palette.accent.withValues(alpha: 0.8)
                       : palette.secondary,
                 ),
               ],
@@ -286,15 +285,55 @@ class NativeToggle extends StatelessWidget {
   final bool value;
   final ValueChanged<bool> onChanged;
 
+  static const _width = 40.0;
+  static const _height = 24.0;
+  static const _inset = 2.0;
+
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 42,
-      height: 24,
-      child: CNSwitch(
-        value: value,
-        onChanged: onChanged,
-        height: 24,
+    final palette = ClipPalette(
+      dark: MediaQuery.platformBrightnessOf(context) == Brightness.dark,
+    );
+    final thumb = _height - _inset * 2;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: () => onChanged(!value),
+        behavior: HitTestBehavior.opaque,
+        child: Semantics(
+          toggled: value,
+          button: true,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+            width: _width,
+            height: _height,
+            padding: const EdgeInsets.all(_inset),
+            decoration: BoxDecoration(
+              color: value ? palette.accent : palette.toggleOff,
+              borderRadius: BorderRadius.circular(_height / 2),
+            ),
+            child: AnimatedAlign(
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOutCubic,
+              alignment: value ? Alignment.centerRight : Alignment.centerLeft,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFFFFF),
+                  borderRadius: BorderRadius.circular(thumb / 2),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x3D000000),
+                      blurRadius: 1.5,
+                      offset: Offset(0, 1),
+                    ),
+                  ],
+                ),
+                child: SizedBox(width: thumb, height: thumb),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

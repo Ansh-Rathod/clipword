@@ -344,12 +344,7 @@ class _PalettePageState extends State<PalettePage> {
     if (box != null && box.hasSize && box.attached) {
       origin = box.localToGlobal(Offset.zero);
     }
-    c.channel.showItemMenu(
-      kind: kind,
-      id: id,
-      x: origin?.dx,
-      y: origin?.dy,
-    );
+    c.channel.showItemMenu(kind: kind, id: id, x: origin?.dx, y: origin?.dy);
   }
 
   void _syncSearch() {
@@ -383,8 +378,9 @@ class _PalettePageState extends State<PalettePage> {
         if (!c.dialogOpen) ...{
           const SingleActivator(LogicalKeyboardKey.arrowDown):
               const _MoveIntent(1),
-          const SingleActivator(LogicalKeyboardKey.arrowUp):
-              const _MoveIntent(-1),
+          const SingleActivator(LogicalKeyboardKey.arrowUp): const _MoveIntent(
+            -1,
+          ),
           const SingleActivator(LogicalKeyboardKey.enter):
               const _ActivateIntent(),
           const SingleActivator(LogicalKeyboardKey.enter, meta: true):
@@ -417,8 +413,7 @@ class _PalettePageState extends State<PalettePage> {
           const SingleActivator(LogicalKeyboardKey.keyP, alt: true):
               const _PinItemIntent(),
         },
-        const SingleActivator(LogicalKeyboardKey.escape):
-            const _EscapeIntent(),
+        const SingleActivator(LogicalKeyboardKey.escape): const _EscapeIntent(),
         const SingleActivator(LogicalKeyboardKey.comma, meta: true):
             const _SettingsIntent(),
         const SingleActivator(LogicalKeyboardKey.keyW, meta: true):
@@ -578,7 +573,7 @@ class _PalettePageState extends State<PalettePage> {
   Widget _searchRow(ClipSnapshot snap) {
     final bookmarks = snap.source == 'bookmarks';
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
       child: Row(
         children: [
           if (bookmarks)
@@ -595,7 +590,7 @@ class _PalettePageState extends State<PalettePage> {
               controller: _search,
               focusNode: _searchFocus,
               style: TextStyle(fontSize: 17, color: p.label),
-              cursorColor: ClipTokens.accent,
+              cursorColor: p.accent,
               backgroundCursorColor: p.secondary,
               onChanged: c.channel.setSearch,
             ),
@@ -604,7 +599,8 @@ class _PalettePageState extends State<PalettePage> {
           FilterChipButton(
             icon: _filterIcon(snap),
             title: _filterTitle(snap),
-            emphasized: snap.category != null ||
+            emphasized:
+                snap.category != null ||
                 snap.appBundleId != null ||
                 snap.timeFilter.isActive,
             palette: p,
@@ -711,88 +707,91 @@ class _PalettePageState extends State<PalettePage> {
           descendantsAreFocusable: false,
           descendantsAreTraversable: false,
           child: SuperListView.builder(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          listController: _listController,
-          controller: _scrollController,
-          primary: false,
-          cacheExtent: 320,
-          itemCount: entries.length,
-          findChildIndexCallback: (key) {
-            if (key is! ValueKey<String>) return null;
-            final index = entries.indexWhere(
-              (entry) => '${entry.kind}:${entry.id}' == key.value,
-            );
-            return index < 0 ? null : index;
-          },
-          itemBuilder: (context, index) {
-            final entry = entries[index];
-            final key = ValueKey('${entry.kind}:${entry.id}');
-            if (entry.kind == 'section') {
-              return Padding(
-                key: key,
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
-                child: Text(
-                  entry.title ?? '',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: p.secondary,
-                  ),
-                ),
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            listController: _listController,
+            controller: _scrollController,
+            primary: false,
+            cacheExtent: 320,
+            itemCount: entries.length,
+            findChildIndexCallback: (key) {
+              if (key is! ValueKey<String>) return null;
+              final index = entries.indexWhere(
+                (entry) => '${entry.kind}:${entry.id}' == key.value,
               );
-            }
-            if (entry.kind == 'empty') {
-              return Padding(
-                key: key,
-                padding: const EdgeInsets.fromLTRB(36, 6, 16, 6),
-                child: Text(
-                  'Empty folder',
-                  style: TextStyle(color: p.tertiary, fontSize: 13),
-                ),
-              );
-            }
-            final selected =
-                c.selection?.kind == entry.kind && c.selection?.id == entry.id;
-            final emphasized = selected && c.listFocused;
-            Color? fill;
-            if (emphasized) {
-              fill = ClipTokens.accent;
-            } else if (selected) {
-              fill = p.selectedIdle;
-            }
-            return KeyedSubtree(
-              key: key,
-              child: MouseRegion(
-                cursor: SystemMouseCursors.click,
-                child: GestureDetector(
-                  key: selected ? _selectedRowKey : null,
-                  onTap: () {
-                    c.selectEntry(entry.kind, entry.id ?? '');
-                    _keepArrowKeys();
-                  },
-                  onDoubleTap: () => c.activatePrimary(),
-                  onSecondaryTap: () =>
-                      c.channel.showItemMenu(kind: entry.kind, id: entry.id),
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: fill,
-                      borderRadius: BorderRadius.circular(ClipTokens.rowRadius),
+              return index < 0 ? null : index;
+            },
+            itemBuilder: (context, index) {
+              final entry = entries[index];
+              final key = ValueKey('${entry.kind}:${entry.id}');
+              if (entry.kind == 'section') {
+                return Padding(
+                  key: key,
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+                  child: Text(
+                    entry.title ?? '',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: p.secondary,
                     ),
-                    child: Padding(
-                      padding: EdgeInsets.fromLTRB(
-                        entry.indented ? 20 : 8,
-                        6,
-                        10,
-                        6,
+                  ),
+                );
+              }
+              if (entry.kind == 'empty') {
+                return Padding(
+                  key: key,
+                  padding: const EdgeInsets.fromLTRB(36, 6, 16, 6),
+                  child: Text(
+                    'Empty folder',
+                    style: TextStyle(color: p.tertiary, fontSize: 13),
+                  ),
+                );
+              }
+              final selected =
+                  c.selection?.kind == entry.kind &&
+                  c.selection?.id == entry.id;
+              final emphasized = selected && c.listFocused;
+              Color? fill;
+              if (emphasized) {
+                fill = p.accent;
+              } else if (selected) {
+                fill = p.selectedIdle;
+              }
+              return KeyedSubtree(
+                key: key,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    key: selected ? _selectedRowKey : null,
+                    onTap: () {
+                      c.selectEntry(entry.kind, entry.id ?? '');
+                      _keepArrowKeys();
+                    },
+                    onDoubleTap: () => c.activatePrimary(),
+                    onSecondaryTap: () =>
+                        c.channel.showItemMenu(kind: entry.kind, id: entry.id),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: fill,
+                        borderRadius: BorderRadius.circular(
+                          ClipTokens.rowRadius,
+                        ),
                       ),
-                      child: _row(entry, emphasized),
+                      child: Padding(
+                        padding: EdgeInsets.fromLTRB(
+                          entry.indented ? 20 : 8,
+                          6,
+                          10,
+                          6,
+                        ),
+                        child: _row(entry, emphasized),
+                      ),
                     ),
                   ),
                 ),
-              ),
-            );
-          },
-        ),
+              );
+            },
+          ),
         ),
       ),
     );
@@ -841,7 +840,7 @@ class _PalettePageState extends State<PalettePage> {
             height: 16,
             margin: const EdgeInsets.only(right: 6),
             decoration: BoxDecoration(
-              color: ClipTokens.accent,
+              color: p.accent,
               borderRadius: BorderRadius.circular(2),
             ),
           ),
@@ -859,14 +858,14 @@ class _PalettePageState extends State<PalettePage> {
           SymbolIcon(
             'bookmark.fill',
             size: 10,
-            color: emphasized ? const Color(0xF2FFFFFF) : ClipTokens.bookmark,
+            color: emphasized ? const Color(0xF2FFFFFF) : p.accent,
           ),
         if (pinned) ...[
           const SizedBox(width: 4),
           SymbolIcon(
             'pin.fill',
             size: 10,
-            color: emphasized ? const Color(0xF2FFFFFF) : ClipTokens.pin,
+            color: emphasized ? const Color(0xF2FFFFFF) : p.orange,
           ),
         ],
       ],
@@ -1011,7 +1010,7 @@ class _PalettePageState extends State<PalettePage> {
   Widget _toast(String kind) {
     String title = kind;
     String icon = 'checkmark.circle.fill';
-    Color color = ClipTokens.success;
+    Color color = p.success;
     switch (kind) {
       case 'copied':
         title = 'Copied';
@@ -1020,7 +1019,7 @@ class _PalettePageState extends State<PalettePage> {
       case 'bookmarked':
         title = 'Bookmarked';
         icon = 'bookmark.fill';
-        color = ClipTokens.accent;
+        color = p.accent;
       case 'unbookmarked':
         title = 'Removed bookmark';
         icon = 'bookmark';
@@ -1028,7 +1027,7 @@ class _PalettePageState extends State<PalettePage> {
       case 'pinned':
         title = 'Pinned';
         icon = 'pin.fill';
-        color = ClipTokens.pin;
+        color = p.orange;
       case 'unpinned':
         title = 'Unpinned';
         icon = 'pin';
@@ -1036,7 +1035,7 @@ class _PalettePageState extends State<PalettePage> {
     }
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: p.window,
+        color: p.grouped,
         borderRadius: BorderRadius.circular(12),
         boxShadow: const [
           BoxShadow(
@@ -1173,7 +1172,7 @@ class DetailPane extends StatelessWidget {
           const SizedBox(height: 8),
           GestureDetector(
             onTap: () => controller.channel.openUrl(url),
-            child: Text(url, style: const TextStyle(color: ClipTokens.accent)),
+            child: Text(url, style: TextStyle(color: palette.accent)),
           ),
         ],
       ),
@@ -1271,7 +1270,7 @@ class DetailPane extends StatelessWidget {
                   controller.channel.openUrl(detail['linkURL'] as String),
               child: Text(
                 detail['linkURL'] as String,
-                style: const TextStyle(color: ClipTokens.accent),
+                style: TextStyle(color: palette.accent),
               ),
             ),
           ),
@@ -1443,7 +1442,7 @@ class _EditSheetState extends State<EditSheet> {
               onTap: () {},
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: p.window,
+                  color: p.grouped,
                   borderRadius: BorderRadius.circular(16),
                 ),
                 child: SizedBox(
@@ -1474,7 +1473,7 @@ class _EditSheetState extends State<EditSheet> {
                               fontSize: 13,
                               color: p.label,
                             ),
-                            cursorColor: ClipTokens.accent,
+                            cursorColor: p.accent,
                             backgroundCursorColor: p.secondary,
                           ),
                         ),
@@ -1607,7 +1606,7 @@ class _FolderSheetState extends State<FolderSheet> {
               onTap: () {},
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: p.window,
+                  color: p.grouped,
                   borderRadius: BorderRadius.circular(14),
                 ),
                 child: SizedBox(
@@ -1631,7 +1630,7 @@ class _FolderSheetState extends State<FolderSheet> {
                           controller: _text,
                           focusNode: _focus,
                           style: TextStyle(fontSize: 15, color: p.label),
-                          cursorColor: ClipTokens.accent,
+                          cursorColor: p.accent,
                           backgroundCursorColor: p.secondary,
                         ),
                         const SizedBox(height: 16),
@@ -1692,11 +1691,14 @@ class _DialogActions extends StatelessWidget {
             onTap: onConfirm,
             child: DecoratedBox(
               decoration: BoxDecoration(
-                color: ClipTokens.accent,
+                color: palette.accent,
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 7,
+                ),
                 child: Row(
                   children: [
                     Text(
@@ -1710,11 +1712,15 @@ class _DialogActions extends StatelessWidget {
                     DecoratedBox(
                       decoration: BoxDecoration(
                         color: const Color(0x33FFFFFF),
-                        borderRadius:
-                            BorderRadius.circular(ClipTokens.keycapRadius),
+                        borderRadius: BorderRadius.circular(
+                          ClipTokens.keycapRadius,
+                        ),
                       ),
                       child: const Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 2,
+                        ),
                         child: Icon(
                           Icons.keyboard_return,
                           size: 12,

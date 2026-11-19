@@ -7,69 +7,101 @@ import '../palette/widgets.dart';
 import '../theme/tokens.dart';
 
 class SettingsPage extends StatelessWidget {
-  const SettingsPage({super.key, required this.controller, required this.palette});
+  const SettingsPage({
+    super.key,
+    required this.controller,
+    required this.palette,
+  });
   final ClipwordController controller;
   final ClipPalette palette;
+
+  List<_NavItem> get _sections => [
+    _NavItem('general', 'General', 'gear', palette.gray),
+    _NavItem('storage', 'Storage', 'internaldrive', palette.accent),
+    _NavItem('ignore', 'Ignore', 'eye.slash', palette.orange),
+    _NavItem(
+      'advanced',
+      'Advanced',
+      'wrench.and.screwdriver',
+      palette.success,
+    ),
+  ];
 
   @override
   Widget build(BuildContext context) {
     final snap = controller.snapshot;
-    const sections = [
-      ('general', 'General', 'gear'),
-      ('storage', 'Storage', 'internaldrive'),
-      ('ignore', 'Ignore', 'eye.slash'),
-      ('advanced', 'Advanced', 'wrench.and.screwdriver'),
-    ];
-    return ColoredBox(
-      color: palette.window,
-      child: Row(
-        children: [
-          SizedBox(
-            width: ClipTokens.settingsSidebar,
-            child: Padding(
-              padding: const EdgeInsets.only(top: 16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                    child: Text('Settings', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: palette.secondary)),
-                  ),
-                  for (final section in sections)
-                    _sidebarRow(section.$1, section.$2, section.$3, snap.settingsSection == section.$1),
-                ],
-              ),
-            ),
-          ),
-          ColoredBox(color: palette.divider, child: const SizedBox(width: 1, height: double.infinity)),
-          Expanded(child: _pane(snap)),
-        ],
-      ),
+    final bar = _titlebarHeight(context);
+    final current = _sections.firstWhere(
+      (section) => section.id == snap.settingsSection,
+      orElse: () => _sections.first,
     );
-  }
-
-  Widget _sidebarRow(String id, String title, String icon, bool selected) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        onTap: () => controller.channel.setSettingsSection(id),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: selected ? ClipTokens.accent.withValues(alpha: 0.18) : const Color(0x00000000),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            child: Row(
-              children: [
-                SymbolIcon(icon, size: 14, color: selected ? ClipTokens.accent : palette.label),
-                const SizedBox(width: 8),
-                Text(title, style: TextStyle(color: palette.label)),
-              ],
-            ),
+    return Row(
+      children: [
+        SizedBox(
+          width: ClipTokens.settingsSidebar,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(height: bar),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 4, 8, 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (final section in _sections)
+                        _SidebarItem(
+                          item: section,
+                          selected: snap.settingsSection == section.id,
+                          palette: palette,
+                          onTap: () => controller.channel.setSettingsSection(
+                            section.id,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
-      ),
+        ColoredBox(
+          color: palette.divider,
+          child: const SizedBox(width: 1, height: double.infinity),
+        ),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                height: bar,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 36),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Row(
+                      children: [
+                        _SettingsGlyph(icon: current.icon, tint: current.tint),
+                        const SizedBox(width: 8),
+                        Text(
+                          current.title,
+                          style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: -0.3,
+                            color: palette.label,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              Expanded(child: ClipRect(child: _pane(snap))),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -87,9 +119,125 @@ class SettingsPage extends StatelessWidget {
   }
 }
 
-class _Section extends StatelessWidget {
-  const _Section({required this.title, required this.children, required this.palette});
+class _NavItem {
+  const _NavItem(this.id, this.title, this.icon, this.tint);
+  final String id;
   final String title;
+  final String icon;
+  final Color tint;
+}
+
+class _SidebarItem extends StatefulWidget {
+  const _SidebarItem({
+    required this.item,
+    required this.selected,
+    required this.palette,
+    required this.onTap,
+  });
+  final _NavItem item;
+  final bool selected;
+  final ClipPalette palette;
+  final VoidCallback onTap;
+
+  @override
+  State<_SidebarItem> createState() => _SidebarItemState();
+}
+
+class _SidebarItemState extends State<_SidebarItem> {
+  bool hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = widget.selected;
+    final fill = selected
+        ? widget.palette.accent
+        : hovered
+        ? widget.palette.hover
+        : const Color(0x00000000);
+    final label = selected ? const Color(0xFFFFFFFF) : widget.palette.label;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => hovered = true),
+        onExit: (_) => setState(() => hovered = false),
+        child: GestureDetector(
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 90),
+            decoration: BoxDecoration(
+              color: fill,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            padding: const EdgeInsets.fromLTRB(8, 6, 10, 6),
+            child: Row(
+              children: [
+                _SettingsGlyph(
+                  icon: widget.item.icon,
+                  tint: widget.item.tint,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  widget.item.title,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                    color: label,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+double _titlebarHeight(BuildContext context) {
+  final pad = MediaQuery.paddingOf(context).top;
+  return pad > ClipTokens.settingsTitlebar ? pad : ClipTokens.settingsTitlebar;
+}
+
+class _SettingsGlyph extends StatelessWidget {
+  const _SettingsGlyph({required this.icon, required this.tint});
+  final String icon;
+  final Color tint;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: tint,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: SizedBox(
+        width: 24,
+        height: 24,
+        child: Center(
+          child: SymbolIcon(icon, size: 12, color: const Color(0xFFFFFFFF)),
+        ),
+      ),
+    );
+  }
+}
+
+class _PaneScaffold extends StatelessWidget {
+  const _PaneScaffold({required this.children});
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(36, 12, 36, 40),
+      children: children,
+    );
+  }
+}
+
+class _Section extends StatelessWidget {
+  const _Section({this.title, required this.children, required this.palette});
+  final String? title;
   final List<Widget> children;
   final ClipPalette palette;
 
@@ -100,16 +248,44 @@ class _Section extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: palette.secondary)),
-          const SizedBox(height: 10),
+          if (title != null) ...[
+            Padding(
+              padding: const EdgeInsets.only(left: 4, bottom: 8),
+              child: Text(
+                title!,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -0.1,
+                  color: palette.secondary,
+                ),
+              ),
+            ),
+          ],
           DecoratedBox(
             decoration: BoxDecoration(
-              color: palette.label.withValues(alpha: 0.04),
-              borderRadius: BorderRadius.circular(12),
+              color: palette.grouped,
+              borderRadius: BorderRadius.circular(
+                ClipTokens.settingsGroupRadius,
+              ),
             ),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(children: children),
+            child: Column(
+              children: [
+                for (final (i, child) in children.indexed) ...[
+                  if (i > 0)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 16),
+                      child: ColoredBox(
+                        color: palette.divider,
+                        child: const SizedBox(
+                          height: 0.5,
+                          width: double.infinity,
+                        ),
+                      ),
+                    ),
+                  child,
+                ],
+              ],
             ),
           ),
         ],
@@ -119,7 +295,12 @@ class _Section extends StatelessWidget {
 }
 
 class _PrefRow extends StatelessWidget {
-  const _PrefRow({required this.label, required this.child, this.caption, required this.palette});
+  const _PrefRow({
+    required this.label,
+    required this.child,
+    this.caption,
+    required this.palette,
+  });
   final String label;
   final Widget child;
   final String? caption;
@@ -128,22 +309,30 @@ class _PrefRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(label, style: TextStyle(color: palette.label)),
+                Text(
+                  label,
+                  style: TextStyle(fontSize: 13, color: palette.label),
+                ),
                 if (caption != null)
                   Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text(caption!, style: TextStyle(fontSize: 11, color: palette.secondary)),
+                    padding: const EdgeInsets.only(top: 3),
+                    child: Text(
+                      caption!,
+                      style: TextStyle(fontSize: 11, color: palette.secondary),
+                    ),
                   ),
               ],
             ),
           ),
+          const SizedBox(width: 16),
           child,
         ],
       ),
@@ -151,16 +340,89 @@ class _PrefRow extends StatelessWidget {
   }
 }
 
+class _PushButton extends StatefulWidget {
+  const _PushButton({
+    required this.label,
+    required this.onTap,
+    required this.palette,
+    this.destructive = false,
+  });
+  final String label;
+  final VoidCallback onTap;
+  final ClipPalette palette;
+  final bool destructive;
+
+  @override
+  State<_PushButton> createState() => _PushButtonState();
+}
+
+class _PushButtonState extends State<_PushButton> {
+  bool hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final fill = hovered ? widget.palette.control : widget.palette.chipFill;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => hovered = true),
+      onExit: (_) => setState(() => hovered = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: fill,
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 4),
+            child: Text(
+              widget.label,
+              style: TextStyle(
+                fontSize: 13,
+                color: widget.destructive
+                    ? widget.palette.destructive
+                    : widget.palette.label,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ShortcutKeys extends StatelessWidget {
+  const _ShortcutKeys(this.keys, {required this.palette});
+  final List<String> keys;
+  final ClipPalette palette;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final (i, key) in keys.indexed) ...[
+          if (i > 0) const SizedBox(width: 3),
+          Keycap(text: key, palette: palette),
+        ],
+      ],
+    );
+  }
+}
+
 class GeneralPane extends StatelessWidget {
-  const GeneralPane({super.key, required this.controller, required this.palette});
+  const GeneralPane({
+    super.key,
+    required this.controller,
+    required this.palette,
+  });
   final ClipwordController controller;
   final ClipPalette palette;
 
   @override
   Widget build(BuildContext context) {
     final prefs = controller.snapshot.prefs;
-    return ListView(
-      padding: const EdgeInsets.all(24),
+    return _PaneScaffold(
       children: [
         _Section(
           title: 'Startup',
@@ -171,7 +433,8 @@ class GeneralPane extends StatelessWidget {
               palette: palette,
               child: NativeToggle(
                 value: prefs.launchAtLogin,
-                onChanged: (v) => controller.channel.prefsSet({'launchAtLogin': v}),
+                onChanged: (v) =>
+                    controller.channel.prefsSet({'launchAtLogin': v}),
               ),
             ),
           ],
@@ -184,16 +447,22 @@ class GeneralPane extends StatelessWidget {
               label: 'Open at',
               palette: palette,
               child: _MenuValue(
-                value: {
-                  'cursor': 'At cursor',
-                  'menuBar': 'At menu bar',
-                  'center': 'Screen center',
-                  'lastPosition': 'Last position',
-                }[prefs.popupPosition] ??
+                value:
+                    {
+                      'cursor': 'At cursor',
+                      'menuBar': 'At menu bar',
+                      'center': 'Screen center',
+                      'lastPosition': 'Last position',
+                    }[prefs.popupPosition] ??
                     prefs.popupPosition,
                 onTap: () async {
                   final picked = await controller.channel.showChoices(
-                    ['At cursor', 'At menu bar', 'Screen center', 'Last position'],
+                    [
+                      'At cursor',
+                      'At menu bar',
+                      'Screen center',
+                      'Last position',
+                    ],
                     current: {
                       'cursor': 'At cursor',
                       'menuBar': 'At menu bar',
@@ -208,7 +477,9 @@ class GeneralPane extends StatelessWidget {
                     'Last position': 'lastPosition',
                   };
                   if (picked != null) {
-                    await controller.channel.prefsSet({'popupPosition': map[picked]});
+                    await controller.channel.prefsSet({
+                      'popupPosition': map[picked],
+                    });
                   }
                 },
                 palette: palette,
@@ -220,27 +491,75 @@ class GeneralPane extends StatelessWidget {
           title: 'Shortcuts',
           palette: palette,
           children: [
-            _PrefRow(label: 'Open Clipword', palette: palette, child: Text('⇧⌘C', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
-            _PrefRow(label: 'Search clips and bookmarks', palette: palette, child: Text('Type', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
-            _PrefRow(label: 'Move through the list', palette: palette, child: Text('↑ ↓', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
             _PrefRow(
-              label: prefs.pasteAutomatically ? 'Paste selected item' : 'Copy selected item',
+              label: 'Open Clipword',
               palette: palette,
-              child: Text('Return', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo')),
+              child: _ShortcutKeys(['⇧', '⌘', 'C'], palette: palette),
             ),
             _PrefRow(
-              label: prefs.pasteAutomatically ? 'Copy selected item' : 'Paste selected item',
+              label: 'Search clips and bookmarks',
               palette: palette,
-              child: Text('⌘Return', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo')),
+              child: _ShortcutKeys(['Type'], palette: palette),
             ),
-            _PrefRow(label: 'Toggle bookmarks / recent', palette: palette, child: Text('⌘B', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
-            _PrefRow(label: 'Item actions menu', palette: palette, child: Text('⌘K', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
-            _PrefRow(label: 'Copy selected item', palette: palette, child: Text('⌘C', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
-            _PrefRow(label: 'Edit selected item', palette: palette, child: Text('⌘E', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
-            _PrefRow(label: 'Add to paste stack', palette: palette, child: Text('⇧⌘V', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
-            _PrefRow(label: 'Bookmark selected item', palette: palette, child: Text('⌥B', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
-            _PrefRow(label: 'Pin selected item', palette: palette, child: Text('⌥P', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
-            _PrefRow(label: 'Delete selected item', palette: palette, child: Text('⌘⌫', style: TextStyle(color: palette.secondary, fontFamily: 'Menlo'))),
+            _PrefRow(
+              label: 'Move through the list',
+              palette: palette,
+              child: _ShortcutKeys(['↑', '↓'], palette: palette),
+            ),
+            _PrefRow(
+              label: prefs.pasteAutomatically
+                  ? 'Paste selected item'
+                  : 'Copy selected item',
+              palette: palette,
+              child: _ShortcutKeys(['↩'], palette: palette),
+            ),
+            _PrefRow(
+              label: prefs.pasteAutomatically
+                  ? 'Copy selected item'
+                  : 'Paste selected item',
+              palette: palette,
+              child: _ShortcutKeys(['⌘', '↩'], palette: palette),
+            ),
+            _PrefRow(
+              label: 'Toggle bookmarks / recent',
+              palette: palette,
+              child: _ShortcutKeys(['⌘', 'B'], palette: palette),
+            ),
+            _PrefRow(
+              label: 'Item actions menu',
+              palette: palette,
+              child: _ShortcutKeys(['⌘', 'K'], palette: palette),
+            ),
+            _PrefRow(
+              label: 'Copy selected item',
+              palette: palette,
+              child: _ShortcutKeys(['⌘', 'C'], palette: palette),
+            ),
+            _PrefRow(
+              label: 'Edit selected item',
+              palette: palette,
+              child: _ShortcutKeys(['⌘', 'E'], palette: palette),
+            ),
+            _PrefRow(
+              label: 'Add to paste stack',
+              palette: palette,
+              child: _ShortcutKeys(['⇧', '⌘', 'V'], palette: palette),
+            ),
+            _PrefRow(
+              label: 'Bookmark selected item',
+              palette: palette,
+              child: _ShortcutKeys(['⌥', 'B'], palette: palette),
+            ),
+            _PrefRow(
+              label: 'Pin selected item',
+              palette: palette,
+              child: _ShortcutKeys(['⌥', 'P'], palette: palette),
+            ),
+            _PrefRow(
+              label: 'Delete selected item',
+              palette: palette,
+              child: _ShortcutKeys(['⌘', '⌫'], palette: palette),
+            ),
           ],
         ),
         _Section(
@@ -251,14 +570,20 @@ class GeneralPane extends StatelessWidget {
               label: 'Search mode',
               palette: palette,
               child: _MenuValue(
-                value: prefs.searchMode[0].toUpperCase() + prefs.searchMode.substring(1),
+                value:
+                    prefs.searchMode[0].toUpperCase() +
+                    prefs.searchMode.substring(1),
                 onTap: () async {
                   final picked = await controller.channel.showChoices(
                     ['Exact', 'Fuzzy', 'Regex', 'Mixed'],
-                    current: prefs.searchMode[0].toUpperCase() + prefs.searchMode.substring(1),
+                    current:
+                        prefs.searchMode[0].toUpperCase() +
+                        prefs.searchMode.substring(1),
                   );
                   if (picked != null) {
-                    await controller.channel.prefsSet({'searchMode': picked.toLowerCase()});
+                    await controller.channel.prefsSet({
+                      'searchMode': picked.toLowerCase(),
+                    });
                   }
                 },
                 palette: palette,
@@ -279,7 +604,9 @@ class GeneralPane extends StatelessWidget {
                 onTap: () async {
                   final picked = await controller.channel.showChoices(
                     ['Paste', 'Copy to clipboard'],
-                    current: prefs.pasteAutomatically ? 'Paste' : 'Copy to clipboard',
+                    current: prefs.pasteAutomatically
+                        ? 'Paste'
+                        : 'Copy to clipboard',
                   );
                   if (picked != null) {
                     await controller.channel.prefsSet({
@@ -295,7 +622,8 @@ class GeneralPane extends StatelessWidget {
               palette: palette,
               child: NativeToggle(
                 value: prefs.pasteWithoutFormatting,
-                onChanged: (v) => controller.channel.prefsSet({'pasteWithoutFormatting': v}),
+                onChanged: (v) =>
+                    controller.channel.prefsSet({'pasteWithoutFormatting': v}),
               ),
             ),
           ],
@@ -306,37 +634,78 @@ class GeneralPane extends StatelessWidget {
 }
 
 class StoragePane extends StatelessWidget {
-  const StoragePane({super.key, required this.controller, required this.palette});
+  const StoragePane({
+    super.key,
+    required this.controller,
+    required this.palette,
+  });
   final ClipwordController controller;
   final ClipPalette palette;
 
   @override
   Widget build(BuildContext context) {
     final prefs = controller.snapshot.prefs;
-    return ListView(
-      padding: const EdgeInsets.all(24),
+    return _PaneScaffold(
       children: [
         _Section(
           title: 'Content types',
           palette: palette,
           children: [
-            _PrefRow(label: 'Save text', palette: palette, child: NativeToggle(value: prefs.saveText, onChanged: (v) => controller.channel.prefsSet({'saveText': v}))),
-            _PrefRow(label: 'Save images', palette: palette, child: NativeToggle(value: prefs.saveImages, onChanged: (v) => controller.channel.prefsSet({'saveImages': v}))),
-            _PrefRow(label: 'Save files', palette: palette, child: NativeToggle(value: prefs.saveFiles, onChanged: (v) => controller.channel.prefsSet({'saveFiles': v}))),
+            _PrefRow(
+              label: 'Save text',
+              palette: palette,
+              child: NativeToggle(
+                value: prefs.saveText,
+                onChanged: (v) => controller.channel.prefsSet({'saveText': v}),
+              ),
+            ),
+            _PrefRow(
+              label: 'Save images',
+              palette: palette,
+              child: NativeToggle(
+                value: prefs.saveImages,
+                onChanged: (v) =>
+                    controller.channel.prefsSet({'saveImages': v}),
+              ),
+            ),
+            _PrefRow(
+              label: 'Save files',
+              palette: palette,
+              child: NativeToggle(
+                value: prefs.saveFiles,
+                onChanged: (v) => controller.channel.prefsSet({'saveFiles': v}),
+              ),
+            ),
           ],
         ),
         _Section(
           title: 'Link previews',
           palette: palette,
           children: [
-            _PrefRow(label: 'Load link previews', palette: palette, child: NativeToggle(value: prefs.loadLinkPreviews, onChanged: (v) => controller.channel.prefsSet({'loadLinkPreviews': v}))),
-            _PrefRow(label: 'Preview cache', palette: palette, child: Text(controller.snapshot.previewCacheSize, style: TextStyle(color: palette.secondary))),
             _PrefRow(
-              label: 'Clear Preview Cache',
+              label: 'Load link previews',
               palette: palette,
-              child: GestureDetector(
-                onTap: () => controller.channel.clearPreviewCache(),
-                child: const Text('Clear', style: TextStyle(color: ClipTokens.accent)),
+              child: NativeToggle(
+                value: prefs.loadLinkPreviews,
+                onChanged: (v) =>
+                    controller.channel.prefsSet({'loadLinkPreviews': v}),
+              ),
+            ),
+            _PrefRow(
+              label: 'Preview cache',
+              palette: palette,
+              child: Text(
+                controller.snapshot.previewCacheSize,
+                style: TextStyle(fontSize: 13, color: palette.secondary),
+              ),
+            ),
+            _PrefRow(
+              label: 'Clear preview cache',
+              palette: palette,
+              child: _PushButton(
+                label: 'Clear',
+                onTap: controller.channel.clearPreviewCache,
+                palette: palette,
               ),
             ),
           ],
@@ -349,15 +718,21 @@ class StoragePane extends StatelessWidget {
               label: 'History size',
               palette: palette,
               child: _MenuValue(
-                value: prefs.historySize <= 0 ? 'Unlimited' : '${prefs.historySize}',
+                value: prefs.historySize <= 0
+                    ? 'Unlimited'
+                    : '${prefs.historySize}',
                 onTap: () async {
                   final picked = await controller.channel.showChoices(
                     ['Unlimited', '100', '200', '500', '1000'],
-                    current: prefs.historySize <= 0 ? 'Unlimited' : '${prefs.historySize}',
+                    current: prefs.historySize <= 0
+                        ? 'Unlimited'
+                        : '${prefs.historySize}',
                   );
                   if (picked == null) return;
                   await controller.channel.prefsSet({
-                    'historySize': picked == 'Unlimited' ? 0 : int.parse(picked),
+                    'historySize': picked == 'Unlimited'
+                        ? 0
+                        : int.parse(picked),
                   });
                 },
                 palette: palette,
@@ -367,18 +742,27 @@ class StoragePane extends StatelessWidget {
               label: 'Keep history for',
               palette: palette,
               child: _MenuValue(
-                value: {
-                  'day': 'A Day',
-                  'week': 'A Week',
-                  'month': 'A Month',
-                  'threeMonths': '3 Months',
-                  'sixMonths': '6 Months',
-                  'year': 'A Year',
-                  'unlimited': 'Unlimited',
-                }[prefs.historyRetention] ??
+                value:
+                    {
+                      'day': 'A Day',
+                      'week': 'A Week',
+                      'month': 'A Month',
+                      'threeMonths': '3 Months',
+                      'sixMonths': '6 Months',
+                      'year': 'A Year',
+                      'unlimited': 'Unlimited',
+                    }[prefs.historyRetention] ??
                     prefs.historyRetention,
                 onTap: () async {
-                  const labels = ['A Day', 'A Week', 'A Month', '3 Months', '6 Months', 'A Year', 'Unlimited'];
+                  const labels = [
+                    'A Day',
+                    'A Week',
+                    'A Month',
+                    '3 Months',
+                    '6 Months',
+                    'A Year',
+                    'Unlimited',
+                  ];
                   const map = {
                     'A Day': 'day',
                     'A Week': 'week',
@@ -390,7 +774,9 @@ class StoragePane extends StatelessWidget {
                   };
                   final picked = await controller.channel.showChoices(labels);
                   if (picked != null) {
-                    await controller.channel.prefsSet({'historyRetention': map[picked]});
+                    await controller.channel.prefsSet({
+                      'historyRetention': map[picked],
+                    });
                   }
                 },
                 palette: palette,
@@ -400,11 +786,12 @@ class StoragePane extends StatelessWidget {
               label: 'Sort by',
               palette: palette,
               child: _MenuValue(
-                value: {
-                  'lastCopied': 'Last copied',
-                  'firstCopied': 'First copied',
-                  'copyCount': 'Copy count',
-                }[prefs.sortOrder] ??
+                value:
+                    {
+                      'lastCopied': 'Last copied',
+                      'firstCopied': 'First copied',
+                      'copyCount': 'Copy count',
+                    }[prefs.sortOrder] ??
                     prefs.sortOrder,
                 onTap: () async {
                   const labels = ['Last copied', 'First copied', 'Copy count'];
@@ -415,13 +802,22 @@ class StoragePane extends StatelessWidget {
                   };
                   final picked = await controller.channel.showChoices(labels);
                   if (picked != null) {
-                    await controller.channel.prefsSet({'sortOrder': map[picked]});
+                    await controller.channel.prefsSet({
+                      'sortOrder': map[picked],
+                    });
                   }
                 },
                 palette: palette,
               ),
             ),
-            _PrefRow(label: 'Database size', palette: palette, child: Text(controller.snapshot.databaseSize, style: TextStyle(color: palette.secondary))),
+            _PrefRow(
+              label: 'Database size',
+              palette: palette,
+              child: Text(
+                controller.snapshot.databaseSize,
+                style: TextStyle(fontSize: 13, color: palette.secondary),
+              ),
+            ),
           ],
         ),
       ],
@@ -430,7 +826,11 @@ class StoragePane extends StatelessWidget {
 }
 
 class IgnorePane extends StatefulWidget {
-  const IgnorePane({super.key, required this.controller, required this.palette});
+  const IgnorePane({
+    super.key,
+    required this.controller,
+    required this.palette,
+  });
   final ClipwordController controller;
   final ClipPalette palette;
 
@@ -450,6 +850,56 @@ class _IgnorePaneState extends State<IgnorePane> {
     super.dispose();
   }
 
+  String get _emptyCopy {
+    switch (tab) {
+      case 0:
+        return 'No ignored apps';
+      case 1:
+        return 'No ignored pasteboard types';
+      default:
+        return 'No ignored regex patterns';
+    }
+  }
+
+  void _addItem(ClipPrefs prefs) {
+    final value = _text.text.trim();
+    if (value.isEmpty) return;
+    if (tab == 0) {
+      widget.controller.channel.prefsSet({
+        'ignoredApps': [...prefs.ignoredApps, value],
+      });
+    } else if (tab == 1) {
+      widget.controller.channel.prefsSet({
+        'ignoredPasteboardTypes': [...prefs.ignoredPasteboardTypes, value],
+      });
+    } else {
+      widget.controller.channel.prefsSet({
+        'ignoredRegexPatterns': [...prefs.ignoredRegexPatterns, value],
+      });
+    }
+    _text.clear();
+  }
+
+  void _removeItem(ClipPrefs prefs, String item) {
+    if (tab == 0) {
+      widget.controller.channel.prefsSet({
+        'ignoredApps': prefs.ignoredApps.where((e) => e != item).toList(),
+      });
+    } else if (tab == 1) {
+      widget.controller.channel.prefsSet({
+        'ignoredPasteboardTypes': prefs.ignoredPasteboardTypes
+            .where((e) => e != item)
+            .toList(),
+      });
+    } else {
+      widget.controller.channel.prefsSet({
+        'ignoredRegexPatterns': prefs.ignoredRegexPatterns
+            .where((e) => e != item)
+            .toList(),
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final prefs = widget.controller.snapshot.prefs;
@@ -457,142 +907,215 @@ class _IgnorePaneState extends State<IgnorePane> {
     final items = tab == 0
         ? prefs.ignoredApps
         : tab == 1
-            ? prefs.ignoredPasteboardTypes
-            : prefs.ignoredRegexPatterns;
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        children: [
-          Row(
+        ? prefs.ignoredPasteboardTypes
+        : prefs.ignoredRegexPatterns;
+    return _PaneScaffold(
+      children: [
+        _Section(
+          palette: palette,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+              child: _SegmentedControl(
+                labels: const ['Apps', 'Types', 'Regex'],
+                index: tab,
+                onChanged: (i) => setState(() => tab = i),
+                palette: palette,
+              ),
+            ),
+          ],
+        ),
+        if (tab == 0)
+          _Section(
+            palette: palette,
             children: [
-              for (final entry in [(0, 'Apps'), (1, 'Types'), (2, 'Regex')])
-                Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: GestureDetector(
-                    onTap: () => setState(() => tab = entry.$1),
+              _PrefRow(
+                label: 'Allow listed apps only',
+                palette: palette,
+                child: NativeToggle(
+                  value: prefs.allowedAppsOnly,
+                  onChanged: (v) => widget.controller.channel.prefsSet({
+                    'allowedAppsOnly': v,
+                  }),
+                ),
+              ),
+            ],
+          ),
+        _Section(
+          palette: palette,
+          children: [
+            if (items.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 14,
+                ),
+                child: Text(
+                  _emptyCopy,
+                  style: TextStyle(fontSize: 13, color: palette.secondary),
+                ),
+              )
+            else
+              for (final item in items)
+                _PrefRow(
+                  label: item,
+                  palette: palette,
+                  child: _PushButton(
+                    label: 'Remove',
+                    destructive: true,
+                    palette: palette,
+                    onTap: () => _removeItem(prefs, item),
+                  ),
+                ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+              child: Row(
+                children: [
+                  Expanded(
                     child: DecoratedBox(
                       decoration: BoxDecoration(
-                        color: tab == entry.$1 ? ClipTokens.accent.withValues(alpha: 0.16) : palette.chipFill,
-                        borderRadius: BorderRadius.circular(8),
+                        color: palette.chipFill,
+                        borderRadius: BorderRadius.circular(6),
                       ),
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        child: Text(entry.$2, style: TextStyle(color: palette.label)),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 6,
+                        ),
+                        child: EditableText(
+                          controller: _text,
+                          focusNode: _focus,
+                          style: TextStyle(color: palette.label, fontSize: 13),
+                          cursorColor: palette.accent,
+                          backgroundCursorColor: palette.secondary,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  _PushButton(
+                    label: 'Add',
+                    palette: palette,
+                    onTap: () => _addItem(prefs),
+                  ),
+                  if (tab == 0) ...[
+                    const SizedBox(width: 8),
+                    _PushButton(
+                      label: 'Choose App…',
+                      palette: palette,
+                      onTap: widget.controller.channel.pickIgnoredApps,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _SegmentedControl extends StatelessWidget {
+  const _SegmentedControl({
+    required this.labels,
+    required this.index,
+    required this.onChanged,
+    required this.palette,
+  });
+  final List<String> labels;
+  final int index;
+  final ValueChanged<int> onChanged;
+  final ClipPalette palette;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: palette.chipFill,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(2),
+        child: Row(
+          children: [
+            for (final (i, label) in labels.indexed)
+              Expanded(
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    onTap: () => onChanged(i),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: index == i
+                            ? (palette.dark
+                                  ? const Color(0xFF636366)
+                                  : const Color(0xFFFFFFFF))
+                            : const Color(0x00000000),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 5),
+                        child: Center(
+                          child: Text(
+                            label,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: index == i
+                                  ? FontWeight.w600
+                                  : FontWeight.w500,
+                              color: palette.label,
+                            ),
+                          ),
+                        ),
                       ),
                     ),
                   ),
                 ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          if (tab == 0)
-            _PrefRow(
-              label: 'Allow listed apps only',
-              palette: palette,
-              child: NativeToggle(
-                value: prefs.allowedAppsOnly,
-                onChanged: (v) => widget.controller.channel.prefsSet({'allowedAppsOnly': v}),
               ),
-            ),
-          Row(
-            children: [
-              Expanded(
-                child: EditableText(
-                  controller: _text,
-                  focusNode: _focus,
-                  style: TextStyle(color: palette.label, fontSize: 14),
-                  cursorColor: ClipTokens.accent,
-                  backgroundCursorColor: palette.secondary,
-                ),
-              ),
-              const SizedBox(width: 8),
-              GestureDetector(
-                onTap: () {
-                  final value = _text.text.trim();
-                  if (value.isEmpty) return;
-                  if (tab == 0) {
-                    widget.controller.channel.prefsSet({'ignoredApps': [...prefs.ignoredApps, value]});
-                  } else if (tab == 1) {
-                    widget.controller.channel.prefsSet({'ignoredPasteboardTypes': [...prefs.ignoredPasteboardTypes, value]});
-                  } else {
-                    widget.controller.channel.prefsSet({'ignoredRegexPatterns': [...prefs.ignoredRegexPatterns, value]});
-                  }
-                  _text.clear();
-                },
-                child: const Text('Add', style: TextStyle(color: ClipTokens.accent)),
-              ),
-              if (tab == 0) ...[
-                const SizedBox(width: 12),
-                GestureDetector(
-                  onTap: widget.controller.channel.pickIgnoredApps,
-                  child: Row(
-                    children: [
-                      SymbolIcon('folder', size: 13, color: ClipTokens.accent),
-                      const SizedBox(width: 4),
-                      const Text('Choose App…', style: TextStyle(color: ClipTokens.accent)),
-                    ],
-                  ),
-                ),
-              ],
-            ],
-          ),
-          const SizedBox(height: 12),
-          Expanded(
-            child: ListView(
-              children: [
-                for (final item in items)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 6),
-                    child: Row(
-                      children: [
-                        Expanded(child: Text(item, style: TextStyle(color: palette.label))),
-                        GestureDetector(
-                          onTap: () {
-                            if (tab == 0) {
-                              widget.controller.channel.prefsSet({
-                                'ignoredApps': prefs.ignoredApps.where((e) => e != item).toList(),
-                              });
-                            } else if (tab == 1) {
-                              widget.controller.channel.prefsSet({
-                                'ignoredPasteboardTypes': prefs.ignoredPasteboardTypes.where((e) => e != item).toList(),
-                              });
-                            } else {
-                              widget.controller.channel.prefsSet({
-                                'ignoredRegexPatterns': prefs.ignoredRegexPatterns.where((e) => e != item).toList(),
-                              });
-                            }
-                          },
-                          child: const Text('Remove', style: TextStyle(color: Color(0xFFFF453A))),
-                        ),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 }
 
 class AdvancedPane extends StatelessWidget {
-  const AdvancedPane({super.key, required this.controller, required this.palette});
+  const AdvancedPane({
+    super.key,
+    required this.controller,
+    required this.palette,
+  });
   final ClipwordController controller;
   final ClipPalette palette;
 
   @override
   Widget build(BuildContext context) {
     final prefs = controller.snapshot.prefs;
-    return ListView(
-      padding: const EdgeInsets.all(24),
+    return _PaneScaffold(
       children: [
         _Section(
           title: 'Clipboard',
           palette: palette,
           children: [
-            _PrefRow(label: 'Clear history on quit', palette: palette, child: NativeToggle(value: prefs.clearOnQuit, onChanged: (v) => controller.channel.prefsSet({'clearOnQuit': v}))),
-            _PrefRow(label: 'Clear system clipboard after copy', palette: palette, child: NativeToggle(value: prefs.clearSystemClipboard, onChanged: (v) => controller.channel.prefsSet({'clearSystemClipboard': v}))),
+            _PrefRow(
+              label: 'Clear history on quit',
+              palette: palette,
+              child: NativeToggle(
+                value: prefs.clearOnQuit,
+                onChanged: (v) =>
+                    controller.channel.prefsSet({'clearOnQuit': v}),
+              ),
+            ),
+            _PrefRow(
+              label: 'Clear system clipboard after copy',
+              palette: palette,
+              child: NativeToggle(
+                value: prefs.clearSystemClipboard,
+                onChanged: (v) =>
+                    controller.channel.prefsSet({'clearSystemClipboard': v}),
+              ),
+            ),
           ],
         ),
         _Section(
@@ -606,14 +1129,22 @@ class AdvancedPane extends StatelessWidget {
               child: controller.snapshot.accessibility
                   ? Row(
                       children: [
-                        SymbolIcon('checkmark.circle.fill', size: 14, color: ClipTokens.success),
+                        SymbolIcon(
+                          'checkmark.circle.fill',
+                          size: 14,
+                          color: palette.success,
+                        ),
                         const SizedBox(width: 6),
-                        Text('Granted', style: TextStyle(color: palette.label)),
+                        Text(
+                          'Granted',
+                          style: TextStyle(fontSize: 13, color: palette.label),
+                        ),
                       ],
                     )
-                  : GestureDetector(
+                  : _PushButton(
+                      label: 'Request Permission',
                       onTap: controller.channel.requestAccessibility,
-                      child: const Text('Request Permission', style: TextStyle(color: ClipTokens.accent)),
+                      palette: palette,
                     ),
             ),
           ],
@@ -623,24 +1154,54 @@ class AdvancedPane extends StatelessWidget {
   }
 }
 
-class _MenuValue extends StatelessWidget {
-  const _MenuValue({required this.value, required this.onTap, required this.palette});
+class _MenuValue extends StatefulWidget {
+  const _MenuValue({
+    required this.value,
+    required this.onTap,
+    required this.palette,
+  });
   final String value;
   final VoidCallback onTap;
   final ClipPalette palette;
 
   @override
+  State<_MenuValue> createState() => _MenuValueState();
+}
+
+class _MenuValueState extends State<_MenuValue> {
+  bool hovered = false;
+
+  @override
   Widget build(BuildContext context) {
     return MouseRegion(
       cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => hovered = true),
+      onExit: (_) => setState(() => hovered = false),
       child: GestureDetector(
-        onTap: onTap,
-        child: Row(
-          children: [
-            Text(value, style: TextStyle(color: palette.label)),
-            const SizedBox(width: 6),
-            Icon(Icons.unfold_more, size: 14, color: palette.secondary),
-          ],
+        onTap: widget.onTap,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: hovered ? widget.palette.selectedIdle : widget.palette.control,
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(10, 4, 6, 4),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  widget.value,
+                  style: TextStyle(fontSize: 13, color: widget.palette.label),
+                ),
+                const SizedBox(width: 6),
+                Icon(
+                  Icons.unfold_more,
+                  size: 14,
+                  color: widget.palette.secondary,
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
