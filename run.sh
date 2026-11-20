@@ -2,7 +2,7 @@
 # Build and launch the Flutter Clipword app.
 #
 # Usage:
-#   ./run.sh            # Debug run on macOS
+#   ./run.sh            # Debug run
 #   ./run.sh Release    # Release mode
 
 set -euo pipefail
@@ -15,5 +15,17 @@ if [ "$CONFIGURATION" = "Release" ] || [ "$CONFIGURATION" = "release" ]; then
   MODE_ARGS=(--release)
 fi
 
-echo "==> Running Clipword (Flutter macOS, $CONFIGURATION)..."
-exec flutter run -d macos "${MODE_ARGS[@]}"
+case "$(uname -s)" in
+  Darwin*)                 DEVICE=macos ;;
+  MINGW*|MSYS*|CYGWIN*)    DEVICE=windows ;;
+  *) echo "Unsupported OS: $(uname -s)" >&2; exit 1 ;;
+esac
+
+if command -v fvm >/dev/null 2>&1; then
+  FLUTTER=(fvm flutter)
+else
+  FLUTTER=(flutter)
+fi
+
+echo "==> Running Clipword (Flutter $DEVICE, $CONFIGURATION)..."
+exec "${FLUTTER[@]}" run -d "$DEVICE" "${MODE_ARGS[@]}"

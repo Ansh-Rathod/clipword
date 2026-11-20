@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/cupertino.dart' show CupertinoIcons;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart' show Icons;
 import 'package:flutter/rendering.dart';
@@ -12,6 +14,32 @@ import '../app/controller.dart';
 import '../native/models.dart';
 import '../theme/tokens.dart';
 import 'widgets.dart';
+
+/// macOS uses ⌘ (meta) for shortcuts; Windows uses Ctrl. Central switch.
+bool get _isWindows => !kIsWeb && Platform.isWindows;
+
+/// Primary-modifier activator: `meta:` on macOS, `control:` on Windows.
+SingleActivator _mod(
+  LogicalKeyboardKey key, {
+  bool shift = false,
+  bool alt = false,
+}) =>
+    SingleActivator(
+      key,
+      control: _isWindows,
+      meta: !_isWindows,
+      shift: shift,
+      alt: alt,
+    );
+
+/// Label for the primary modifier keycap: '⌘' macOS, 'Ctrl' Windows.
+String get _modLabel => _isWindows ? 'Ctrl' : '⌘';
+
+/// Whether the primary modifier is currently held (for FocusNode callbacks
+/// that can't use Shortcuts).
+bool get _modPressed => _isWindows
+    ? HardwareKeyboard.instance.isControlPressed
+    : HardwareKeyboard.instance.isMetaPressed;
 
 class PalettePage extends StatefulWidget {
   const PalettePage({
@@ -102,7 +130,7 @@ class _PalettePageState extends State<PalettePage> {
     }
     if ((key == LogicalKeyboardKey.slash ||
             key == LogicalKeyboardKey.numpadDivide) &&
-        HardwareKeyboard.instance.isMetaPressed) {
+        _modPressed) {
       _focusSearch();
       return KeyEventResult.handled;
     }
@@ -114,7 +142,7 @@ class _PalettePageState extends State<PalettePage> {
 
   bool _handleItemShortcut(LogicalKeyboardKey key) {
     if (c.dialogOpen || c.menuTracking) return false;
-    final meta = HardwareKeyboard.instance.isMetaPressed;
+    final meta = _modPressed;
     final alt = HardwareKeyboard.instance.isAltPressed;
     final shift = HardwareKeyboard.instance.isShiftPressed;
     if (meta && !alt) {
@@ -419,43 +447,29 @@ class _PalettePageState extends State<PalettePage> {
           ),
           const SingleActivator(LogicalKeyboardKey.enter):
               const _ActivateIntent(),
-          const SingleActivator(LogicalKeyboardKey.enter, meta: true):
+          _mod(LogicalKeyboardKey.enter):
               const _ActivateIntent(secondary: true),
           const SingleActivator(LogicalKeyboardKey.numpadEnter):
               const _ActivateIntent(),
-          const SingleActivator(LogicalKeyboardKey.numpadEnter, meta: true):
+          _mod(LogicalKeyboardKey.numpadEnter):
               const _ActivateIntent(secondary: true),
-          const SingleActivator(LogicalKeyboardKey.keyB, meta: true):
-              const _ToggleSourceIntent(),
-          const SingleActivator(LogicalKeyboardKey.keyK, meta: true):
-              const _ActionsIntent(),
-          const SingleActivator(LogicalKeyboardKey.slash, meta: true):
-              const _FocusSearchIntent(),
-          const SingleActivator(LogicalKeyboardKey.keyC, meta: true):
-              const _CopyItemIntent(),
-          const SingleActivator(LogicalKeyboardKey.keyE, meta: true):
-              const _EditItemIntent(),
-          const SingleActivator(
-            LogicalKeyboardKey.keyV,
-            meta: true,
-            shift: true,
-          ): const _PasteStackIntent(),
-          const SingleActivator(LogicalKeyboardKey.backspace, meta: true):
-              const _DeleteItemIntent(),
-          const SingleActivator(LogicalKeyboardKey.delete, meta: true):
-              const _DeleteItemIntent(),
+          _mod(LogicalKeyboardKey.keyB): const _ToggleSourceIntent(),
+          _mod(LogicalKeyboardKey.keyK): const _ActionsIntent(),
+          _mod(LogicalKeyboardKey.slash): const _FocusSearchIntent(),
+          _mod(LogicalKeyboardKey.keyC): const _CopyItemIntent(),
+          _mod(LogicalKeyboardKey.keyE): const _EditItemIntent(),
+          _mod(LogicalKeyboardKey.keyV, shift: true): const _PasteStackIntent(),
+          _mod(LogicalKeyboardKey.backspace): const _DeleteItemIntent(),
+          _mod(LogicalKeyboardKey.delete): const _DeleteItemIntent(),
           const SingleActivator(LogicalKeyboardKey.keyB, alt: true):
               const _BookmarkItemIntent(),
           const SingleActivator(LogicalKeyboardKey.keyP, alt: true):
               const _PinItemIntent(),
         },
         const SingleActivator(LogicalKeyboardKey.escape): const _EscapeIntent(),
-        const SingleActivator(LogicalKeyboardKey.comma, meta: true):
-            const _SettingsIntent(),
-        const SingleActivator(LogicalKeyboardKey.keyW, meta: true):
-            const _CloseIntent(),
-        const SingleActivator(LogicalKeyboardKey.keyQ, meta: true):
-            const _QuitIntent(),
+        _mod(LogicalKeyboardKey.comma): const _SettingsIntent(),
+        _mod(LogicalKeyboardKey.keyW): const _CloseIntent(),
+        _mod(LogicalKeyboardKey.keyQ): const _QuitIntent(),
       },
       child: Actions(
         actions: {
@@ -654,8 +668,9 @@ class _PalettePageState extends State<PalettePage> {
   }
 
   String _filterIcon(ClipSnapshot snap) {
-    if (snap.category != null)
+    if (snap.category != null) {
       return categoryIcons[snap.category] ?? 'line.3.horizontal.decrease';
+    }
     if (snap.appBundleId != null) return 'app.badge';
     if (snap.timeFilter.isActive) return 'calendar';
     return 'line.3.horizontal.decrease';
@@ -939,7 +954,7 @@ class _PalettePageState extends State<PalettePage> {
               children: [
                 Text(snap.source == 'bookmarks' ? 'Recents' : 'Bookmarks'),
                 const SizedBox(width: 6),
-                Keycap(text: '⌘', palette: p),
+                Keycap(text: _modLabel, palette: p),
                 const SizedBox(width: 2),
                 Keycap(text: 'B', palette: p),
               ],
@@ -980,7 +995,7 @@ class _PalettePageState extends State<PalettePage> {
                         children: [
                           Text(secondary),
                           const SizedBox(width: 6),
-                          Keycap(text: '⌘', palette: p),
+                          Keycap(text: _modLabel, palette: p),
                           const SizedBox(width: 2),
                           Keycap(iconData: Icons.keyboard_return, palette: p),
                         ],
@@ -1005,7 +1020,7 @@ class _PalettePageState extends State<PalettePage> {
                         children: [
                           const Text('Actions'),
                           const SizedBox(width: 6),
-                          Keycap(text: '⌘', palette: p),
+                          Keycap(text: _modLabel, palette: p),
                           const SizedBox(width: 2),
                           Keycap(text: 'K', palette: p),
                         ],

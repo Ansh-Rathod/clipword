@@ -1,240 +1,133 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
 
+import 'backend.dart';
+import 'method_channel_backend.dart';
 import 'models.dart';
+import 'windows/windows_backend.dart';
 
+/// Facade over the platform host. Callers keep using
+/// `ClipwordChannel.instance`; the concrete backend is chosen once by
+/// platform (macOS → method channel, Windows → Dart backend).
 class ClipwordChannel {
-  ClipwordChannel._() {
-    _methods.setMethodCallHandler(_onMethod);
-  }
+  ClipwordChannel._()
+      : _backend = (!kIsWeb && Platform.isWindows)
+            ? WindowsBackend()
+            : MethodChannelBackend();
 
   static final instance = ClipwordChannel._();
 
-  static const _methods = MethodChannel('clipword');
-  static const _events = EventChannel('clipword/events');
+  final ClipwordBackend _backend;
 
-  final _snapshot = StreamController<ClipSnapshot>.broadcast();
-  final _windowMode = StreamController<String>.broadcast();
-  final _viewsChanged = StreamController<void>.broadcast();
-  final _edit = StreamController<Map<Object?, Object?>>.broadcast();
-  final _newFolder = StreamController<Map<Object?, Object?>>.broadcast();
-  final _renameFolder = StreamController<Map<Object?, Object?>>.broadcast();
-  final _menuTracking = StreamController<bool>.broadcast();
-  final _paletteKey = StreamController<void>.broadcast();
+  /// One-time backend setup. Call once during boot before `start()`.
+  Future<void> init() => _backend.init();
 
-  Stream<ClipSnapshot> get snapshots => _snapshot.stream;
-  Stream<String> get windowModes => _windowMode.stream;
-  Stream<void> get viewsChanged => _viewsChanged.stream;
-  Stream<Map<Object?, Object?>> get edits => _edit.stream;
-  Stream<Map<Object?, Object?>> get newFolders => _newFolder.stream;
-  Stream<Map<Object?, Object?>> get renameFolders => _renameFolder.stream;
-  Stream<bool> get menuTracking => _menuTracking.stream;
-  Stream<void> get paletteKeys => _paletteKey.stream;
+  Stream<ClipSnapshot> get snapshots => _backend.snapshots;
+  Stream<String> get windowModes => _backend.windowModes;
+  Stream<void> get viewsChanged => _backend.viewsChanged;
+  Stream<Map<Object?, Object?>> get edits => _backend.edits;
+  Stream<Map<Object?, Object?>> get newFolders => _backend.newFolders;
+  Stream<Map<Object?, Object?>> get renameFolders => _backend.renameFolders;
+  Stream<bool> get menuTracking => _backend.menuTracking;
+  Stream<void> get paletteKeys => _backend.paletteKeys;
 
-  Future<dynamic> _onMethod(MethodCall call) async {
-    switch (call.method) {
-      case 'onSnapshot':
-        final map = Map<Object?, Object?>.from(call.arguments as Map);
-        _snapshot.add(ClipSnapshot(map));
-      case 'onWindowMode':
-        _windowMode.add(call.arguments as String);
-      case 'onViewsChanged':
-        _viewsChanged.add(null);
-      case 'edit':
-        _edit.add(Map<Object?, Object?>.from(call.arguments as Map));
-      case 'newFolder':
-        _newFolder.add(Map<Object?, Object?>.from(call.arguments as Map));
-      case 'renameFolder':
-        _renameFolder.add(Map<Object?, Object?>.from(call.arguments as Map));
-      case 'onMenuTracking':
-        _menuTracking.add(call.arguments as bool);
-      case 'onPaletteKey':
-        _paletteKey.add(null);
-    }
-  }
+  Future<ClipSnapshot> snapshot() => _backend.snapshot();
 
-  Future<ClipSnapshot> snapshot() async {
-    final raw = await _methods.invokeMethod<Map>('snapshot');
-    return ClipSnapshot(Map<Object?, Object?>.from(raw ?? const {}));
-  }
+  Future<HistoryPage> loadItems({required int offset, int limit = 80}) =>
+      _backend.loadItems(offset: offset, limit: limit);
 
-  Future<HistoryPage> loadItems({required int offset, int limit = 80}) async {
-    final raw = await _methods.invokeMethod<Map>('loadItems', {
-      'offset': offset,
-      'limit': limit,
-    });
-    final map = Map<Object?, Object?>.from(raw ?? const {});
-    return HistoryPage(
-      items: ((map['items'] as List?) ?? const [])
-          .whereType<Map<Object?, Object?>>()
-          .map(HistoryRow.new)
-          .toList(),
-      itemCount: map['itemCount'] as int? ?? 0,
-      listRevision: map['listRevision'] as int? ?? 0,
-    );
-  }
+  Future<void> setSearch(String query) => _backend.setSearch(query);
 
-  Future<void> setSearch(String query) =>
-      _methods.invokeMethod('setSearch', {'query': query});
+  Future<void> setCategory(String? category) => _backend.setCategory(category);
 
-  Future<void> setCategory(String? category) =>
-      _methods.invokeMethod('setCategory', {'category': category});
+  Future<void> setAppFilter(String? bundleId) => _backend.setAppFilter(bundleId);
 
-  Future<void> setAppFilter(String? bundleId) =>
-      _methods.invokeMethod('setAppFilter', {'bundleId': bundleId});
+  Future<void> setTimeFilter(TimeFilter filter) => _backend.setTimeFilter(filter);
 
-  Future<void> setTimeFilter(TimeFilter filter) =>
-      _methods.invokeMethod('setTimeFilter', filter.toArgs());
+  Future<void> setSource(String source) => _backend.setSource(source);
 
-  Future<void> setSource(String source) =>
-      _methods.invokeMethod('setSource', {'source': source});
-
-  Future<void> select(String kind, String id) =>
-      _methods.invokeMethod('select', {'kind': kind, 'id': id});
+  Future<void> select(String kind, String id) => _backend.select(kind, id);
 
   Future<void> setCollapsedFolders(Iterable<String> ids) =>
-      _methods.invokeMethod('setCollapsedFolders', {'ids': ids.toList()});
+      _backend.setCollapsedFolders(ids);
 
   Future<void> activate({required bool paste, bool withoutFormatting = false}) =>
-      _methods.invokeMethod('activate', {
-        'paste': paste,
-        'withoutFormatting': withoutFormatting,
-      });
+      _backend.activate(paste: paste, withoutFormatting: withoutFormatting);
 
-  Future<void> togglePin(String id) =>
-      _methods.invokeMethod('togglePin', {'id': id});
+  Future<void> togglePin(String id) => _backend.togglePin(id);
 
-  Future<void> toggleBookmark(String id) =>
-      _methods.invokeMethod('toggleBookmark', {'id': id});
+  Future<void> toggleBookmark(String id) => _backend.toggleBookmark(id);
 
   Future<void> delete({required String kind, required String id}) =>
-      _methods.invokeMethod('delete', {'kind': kind, 'id': id});
+      _backend.delete(kind: kind, id: id);
 
-  Future<void> addToStack(String id) =>
-      _methods.invokeMethod('addToStack', {'id': id});
+  Future<void> addToStack(String id) => _backend.addToStack(id);
 
   Future<void> editContent(String kind, String id, String content) =>
-      _methods.invokeMethod('editContent', {
-        'kind': kind == 'history' ? 'history' : 'bookmark',
-        'id': id,
-        'content': content,
-      });
+      _backend.editContent(kind, id, content);
 
-  Future<void> createFolder({
+  Future<String?> createFolder({
     required String name,
     String? historyId,
     String? bookmarkId,
   }) =>
-      _methods.invokeMethod('createFolder', {
-        'name': name,
-        if (historyId != null) 'historyId': historyId,
-        if (bookmarkId != null) 'bookmarkId': bookmarkId,
-      });
+      _backend.createFolder(
+        name: name,
+        historyId: historyId,
+        bookmarkId: bookmarkId,
+      );
 
   Future<void> renameFolder(String id, String name) =>
-      _methods.invokeMethod('renameFolder', {'id': id, 'name': name});
+      _backend.renameFolder(id, name);
 
-  Future<void> deleteFolder(String id) =>
-      _methods.invokeMethod('deleteFolder', {'id': id});
+  Future<void> deleteFolder(String id) => _backend.deleteFolder(id);
 
-  Future<void> showItemMenu({
-    String? kind,
-    String? id,
-    double? x,
-    double? y,
-  }) =>
-      _methods.invokeMethod('showItemMenu', {
-        if (kind != null) 'kind': kind,
-        if (id != null) 'id': id,
-        if (x != null) 'x': x,
-        if (y != null) 'y': y,
-      });
+  Future<void> showItemMenu({String? kind, String? id, double? x, double? y}) =>
+      _backend.showItemMenu(kind: kind, id: id, x: x, y: y);
 
-  Future<void> showFilterMenu() => _methods.invokeMethod('showFilterMenu');
+  Future<void> showFilterMenu() => _backend.showFilterMenu();
 
   Future<String?> showChoices(List<String> items, {String? current}) =>
-      _methods.invokeMethod<String>('showChoices', {
-        'items': items,
-        'current': current,
-      });
+      _backend.showChoices(items, current: current);
 
   Future<void> showSettings({String section = 'general'}) =>
-      _methods.invokeMethod('showSettings', {'section': section});
+      _backend.showSettings(section: section);
 
-  Future<void> hideWindow() => _methods.invokeMethod('hideWindow');
+  Future<void> hideWindow() => _backend.hideWindow();
 
-  Future<void> quit() => _methods.invokeMethod('quit');
+  Future<void> showWindow({String? source}) => _backend.showWindow(source: source);
 
-  Future<void> prefsSet(Map<String, Object?> values) =>
-      _methods.invokeMethod('prefsSet', values);
+  Future<void> quit() => _backend.quit();
 
-  Future<bool> requestAccessibility() async =>
-      await _methods.invokeMethod<bool>('requestAccessibility') ?? false;
+  Future<void> prefsSet(Map<String, Object?> values) => _backend.prefsSet(values);
 
-  Future<List<String>> pickIgnoredApps() async {
-    final raw = await _methods.invokeMethod<List>('pickIgnoredApps');
-    return raw?.cast<String>() ?? const [];
-  }
+  Future<bool> requestAccessibility() => _backend.requestAccessibility();
 
-  Future<String> clearPreviewCache() async =>
-      await _methods.invokeMethod<String>('clearPreviewCache') ?? 'Empty';
+  Future<List<String>> pickIgnoredApps() => _backend.pickIgnoredApps();
 
-  Future<Map<Object?, Object?>?> itemDetail(String kind, String id) async {
-    final raw = await _methods.invokeMethod<Map>('itemDetail', {
-      'kind': kind,
-      'id': id,
-    });
-    return raw == null ? null : Map<Object?, Object?>.from(raw);
-  }
+  Future<String> clearPreviewCache() => _backend.clearPreviewCache();
 
-  Future<Map<Object?, Object?>?> linkPreview(String url) async {
-    final raw = await _methods.invokeMethod<Map>('linkPreview', {'url': url});
-    return raw == null ? null : Map<Object?, Object?>.from(raw);
-  }
+  Future<Map<Object?, Object?>?> itemDetail(String kind, String id) =>
+      _backend.itemDetail(kind, id);
 
-  Future<Uint8List?> symbolImage(String name, {double size = 16}) async {
-    final raw = await _methods.invokeMethod('symbolImage', {
-      'name': name,
-      'size': size,
-    });
-    if (raw is Uint8List) return raw;
-    return null;
-  }
+  Future<Map<Object?, Object?>?> linkPreview(String url) =>
+      _backend.linkPreview(url);
 
-  Future<Uint8List?> appIcon(String? bundleId, {double size = 16}) async {
-    if (bundleId == null) return null;
-    final raw = await _methods.invokeMethod('appIcon', {
-      'bundleId': bundleId,
-      'size': size,
-    });
-    if (raw is Uint8List) return raw;
-    return null;
-  }
+  Future<Uint8List?> symbolImage(String name, {double size = 16}) =>
+      _backend.symbolImage(name, size: size);
 
-  Future<void> openUrl(String url) =>
-      _methods.invokeMethod('openUrl', {'url': url});
+  Future<Uint8List?> appIcon(String? bundleId, {double size = 16}) =>
+      _backend.appIcon(bundleId, size: size);
+
+  Future<void> openUrl(String url) => _backend.openUrl(url);
 
   Future<void> setSettingsSection(String section) =>
-      _methods.invokeMethod('setSettingsSection', {'section': section});
+      _backend.setSettingsSection(section);
 
-  Future<void> recordOpenShortcut() =>
-      _methods.invokeMethod('recordOpenShortcut');
+  Future<void> recordOpenShortcut() => _backend.recordOpenShortcut();
 
-  void listenNativeEvents() {
-    _events.receiveBroadcastStream().listen((event) {
-      if (event is! Map) return;
-      final type = event['type'];
-      final payload = event['payload'];
-      if (type == 'snapshot' && payload is Map) {
-        _snapshot.add(ClipSnapshot(Map<Object?, Object?>.from(payload)));
-      } else if (type == 'windowMode' && payload is String) {
-        _windowMode.add(payload);
-      } else if (type == 'menuTracking' && payload is bool) {
-        _menuTracking.add(payload);
-      } else if (type == 'paletteKey') {
-        _paletteKey.add(null);
-      }
-    });
-  }
+  void listenNativeEvents() => _backend.listenNativeEvents();
 }

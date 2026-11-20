@@ -1,3 +1,6 @@
+import 'dart:io' show Platform;
+
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart' show Icons;
 import 'package:flutter/widgets.dart';
 
@@ -5,6 +8,14 @@ import '../app/controller.dart';
 import '../native/models.dart';
 import '../palette/widgets.dart';
 import '../theme/tokens.dart';
+
+bool get _isWin => !kIsWeb && Platform.isWindows;
+
+/// Primary-modifier glyph token: '⌘' macOS, 'Ctrl' Windows.
+String get _modKey => _isWin ? 'Ctrl' : '⌘';
+String get _shiftKey => _isWin ? 'Shift' : '⇧';
+String get _altKey => _isWin ? 'Alt' : '⌥';
+String get _menuBarLabel => _isWin ? 'Near tray icon' : 'At menu bar';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({
@@ -19,12 +30,7 @@ class SettingsPage extends StatelessWidget {
     _NavItem('general', 'General', 'gear', palette.gray),
     _NavItem('storage', 'Storage', 'internaldrive', palette.accent),
     _NavItem('ignore', 'Ignore', 'eye.slash', palette.orange),
-    _NavItem(
-      'advanced',
-      'Advanced',
-      'wrench.and.screwdriver',
-      palette.success,
-    ),
+    _NavItem('advanced', 'Advanced', 'wrench.and.screwdriver', palette.success),
   ];
 
   @override
@@ -42,7 +48,9 @@ class SettingsPage extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              SizedBox(height: bar),
+              // On Windows the native titlebar owns the top chrome — the
+              // sidebar just needs a small inset, not the macOS gap.
+              SizedBox(height: _isWin ? 5 : bar),
               Expanded(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(8, 4, 8, 16),
@@ -54,9 +62,8 @@ class SettingsPage extends StatelessWidget {
                           item: section,
                           selected: snap.settingsSection == section.id,
                           palette: palette,
-                          onTap: () => controller.channel.setSettingsSection(
-                            section.id,
-                          ),
+                          onTap: () =>
+                              controller.channel.setSettingsSection(section.id),
                         ),
                     ],
                   ),
@@ -172,10 +179,7 @@ class _SidebarItemState extends State<_SidebarItem> {
             padding: const EdgeInsets.fromLTRB(8, 6, 10, 6),
             child: Row(
               children: [
-                _SettingsGlyph(
-                  icon: widget.item.icon,
-                  tint: widget.item.tint,
-                ),
+                _SettingsGlyph(icon: widget.item.icon, tint: widget.item.tint),
                 const SizedBox(width: 8),
                 Text(
                   widget.item.title,
@@ -490,7 +494,7 @@ class GeneralPane extends StatelessWidget {
                 value:
                     {
                       'cursor': 'At cursor',
-                      'menuBar': 'At menu bar',
+                      'menuBar': _menuBarLabel,
                       'center': 'Screen center',
                       'lastPosition': 'Last position',
                     }[prefs.popupPosition] ??
@@ -499,20 +503,20 @@ class GeneralPane extends StatelessWidget {
                   final picked = await controller.channel.showChoices(
                     [
                       'At cursor',
-                      'At menu bar',
+                      _menuBarLabel,
                       'Screen center',
                       'Last position',
                     ],
                     current: {
                       'cursor': 'At cursor',
-                      'menuBar': 'At menu bar',
+                      'menuBar': _menuBarLabel,
                       'center': 'Screen center',
                       'lastPosition': 'Last position',
                     }[prefs.popupPosition],
                   );
-                  const map = {
+                  final map = {
                     'At cursor': 'cursor',
-                    'At menu bar': 'menuBar',
+                    _menuBarLabel: 'menuBar',
                     'Screen center': 'center',
                     'Last position': 'lastPosition',
                   };
@@ -525,6 +529,35 @@ class GeneralPane extends StatelessWidget {
                 palette: palette,
               ),
             ),
+            if (_isWin)
+              _PrefRow(
+                label: 'Backdrop',
+                palette: palette,
+                child: _MenuValue(
+                  value:
+                      {
+                        'mica': 'Mica',
+                        'acrylic': 'Acrylic',
+                      }[prefs.windowBackdrop] ??
+                      prefs.windowBackdrop,
+                  onTap: () async {
+                    final picked = await controller.channel.showChoices(
+                      ['Mica', 'Acrylic'],
+                      current: {
+                        'mica': 'Mica',
+                        'acrylic': 'Acrylic',
+                      }[prefs.windowBackdrop],
+                    );
+                    const map = {'Mica': 'mica', 'Acrylic': 'acrylic'};
+                    if (picked != null) {
+                      await controller.channel.prefsSet({
+                        'windowBackdrop': map[picked],
+                      });
+                    }
+                  },
+                  palette: palette,
+                ),
+              ),
           ],
         ),
         _Section(
@@ -563,47 +596,47 @@ class GeneralPane extends StatelessWidget {
                   ? 'Copy selected item'
                   : 'Paste selected item',
               palette: palette,
-              child: _ShortcutKeys(['⌘', '↩'], palette: palette),
+              child: _ShortcutKeys([_modKey, '↩'], palette: palette),
             ),
             _PrefRow(
               label: 'Toggle bookmarks / recent',
               palette: palette,
-              child: _ShortcutKeys(['⌘', 'B'], palette: palette),
+              child: _ShortcutKeys([_modKey, 'B'], palette: palette),
             ),
             _PrefRow(
               label: 'Item actions menu',
               palette: palette,
-              child: _ShortcutKeys(['⌘', 'K'], palette: palette),
+              child: _ShortcutKeys([_modKey, 'K'], palette: palette),
             ),
             _PrefRow(
               label: 'Copy selected item',
               palette: palette,
-              child: _ShortcutKeys(['⌘', 'C'], palette: palette),
+              child: _ShortcutKeys([_modKey, 'C'], palette: palette),
             ),
             _PrefRow(
               label: 'Edit selected item',
               palette: palette,
-              child: _ShortcutKeys(['⌘', 'E'], palette: palette),
+              child: _ShortcutKeys([_modKey, 'E'], palette: palette),
             ),
             _PrefRow(
               label: 'Add to paste stack',
               palette: palette,
-              child: _ShortcutKeys(['⇧', '⌘', 'V'], palette: palette),
+              child: _ShortcutKeys([_shiftKey, _modKey, 'V'], palette: palette),
             ),
             _PrefRow(
               label: 'Bookmark selected item',
               palette: palette,
-              child: _ShortcutKeys(['⌥', 'B'], palette: palette),
+              child: _ShortcutKeys([_altKey, 'B'], palette: palette),
             ),
             _PrefRow(
               label: 'Pin selected item',
               palette: palette,
-              child: _ShortcutKeys(['⌥', 'P'], palette: palette),
+              child: _ShortcutKeys([_altKey, 'P'], palette: palette),
             ),
             _PrefRow(
               label: 'Delete selected item',
               palette: palette,
-              child: _ShortcutKeys(['⌘', '⌫'], palette: palette),
+              child: _ShortcutKeys([_modKey, '⌫'], palette: palette),
             ),
           ],
         ),
@@ -642,7 +675,7 @@ class GeneralPane extends StatelessWidget {
           children: [
             _PrefRow(
               label: 'Return key',
-              caption: '⌘Return does the other action',
+              caption: '$_modKey+Return does the other action',
               palette: palette,
               child: _MenuValue(
                 value: prefs.pasteAutomatically ? 'Paste' : 'Copy to clipboard',
@@ -1169,7 +1202,9 @@ class AdvancedPane extends StatelessWidget {
           children: [
             _PrefRow(
               label: 'Permission',
-              caption: 'macOS lists this as Device Control and Data Access.',
+              caption: _isWin
+                  ? 'Auto-paste works on Windows without extra permissions.'
+                  : 'macOS lists this as Device Control and Data Access.',
               palette: palette,
               child: controller.snapshot.accessibility
                   ? Row(
@@ -1226,7 +1261,9 @@ class _MenuValueState extends State<_MenuValue> {
         onTap: widget.onTap,
         child: DecoratedBox(
           decoration: BoxDecoration(
-            color: hovered ? widget.palette.selectedIdle : widget.palette.control,
+            color: hovered
+                ? widget.palette.selectedIdle
+                : widget.palette.control,
             borderRadius: BorderRadius.circular(6),
           ),
           child: Padding(

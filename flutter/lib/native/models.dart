@@ -20,6 +20,7 @@ class ClipPrefs {
     this.ignoredRegexPatterns = const [],
     this.clearOnQuit = false,
     this.clearSystemClipboard = false,
+    this.windowBackdrop = 'mica',
   });
 
   final bool launchAtLogin;
@@ -40,6 +41,7 @@ class ClipPrefs {
   final List<String> ignoredRegexPatterns;
   final bool clearOnQuit;
   final bool clearSystemClipboard;
+  final String windowBackdrop;
 
   factory ClipPrefs.fromJson(Map<Object?, Object?> json) {
     return ClipPrefs(
@@ -63,6 +65,7 @@ class ClipPrefs {
           (json['ignoredRegexPatterns'] as List?)?.cast<String>() ?? const [],
       clearOnQuit: json['clearOnQuit'] as bool? ?? false,
       clearSystemClipboard: json['clearSystemClipboard'] as bool? ?? false,
+      windowBackdrop: json['windowBackdrop'] as String? ?? 'mica',
     );
   }
 }
