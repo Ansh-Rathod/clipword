@@ -4,7 +4,6 @@ import 'dart:ffi' hide Size;
 import 'dart:io';
 
 import 'package:ffi/ffi.dart';
-import 'package:flutter/material.dart' show BuildContext;
 import 'package:flutter/services.dart';
 import 'package:win32/win32.dart';
 
@@ -36,14 +35,6 @@ import 'windowing.dart';
 class WindowsBackend extends ClipwordBackend {
   static const _win = MethodChannel('clipword_win');
   static const _pageSize = 80;
-
-  /// Set by the app widget tree so backend-driven dialogs (shortcut
-  /// recorder) have a context. Windows-only.
-  static BuildContext? appContext;
-
-  /// Hook invoked by the settings UI to run the shortcut-recorder dialog.
-  /// Returns the recorded `{key, modifiers[]}` map or null when cancelled.
-  static Future<Map<String, Object?>?> Function()? shortcutRecorder;
 
   late final HistoryStore store;
   final _search = SearchService();
@@ -1134,15 +1125,24 @@ class WindowsBackend extends ClipwordBackend {
   }
 
   @override
-  Future<void> recordOpenShortcut() async {
-    final recorder = shortcutRecorder;
-    if (recorder == null) return;
-    final rec = await recorder();
-    if (rec == null) return;
-    Prefs.setOpenShortcutRecording(rec);
-    Prefs.set('openShortcut', WinHotkeys.labelFor(rec));
+  Future<void> setOpenShortcut(Map<String, Object?> recording) async {
+    Prefs.setOpenShortcutRecording(recording);
+    Prefs.set('openShortcut', WinHotkeys.labelFor(recording));
     await _hotkeys.apply();
     emitSnapshot();
+  }
+
+  @override
+  Future<void> pauseOpenShortcut(bool paused) async {
+    await _win.invokeMethod('pauseOpenShortcut', {'paused': paused});
+  }
+
+  @override
+  Future<void> recordOpenShortcut() async {}
+
+  @override
+  Future<void> cancelOpenShortcutRecording() async {
+    await pauseOpenShortcut(false);
   }
 
   @override

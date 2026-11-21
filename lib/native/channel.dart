@@ -127,7 +127,16 @@ class ClipwordChannel {
   Future<void> setSettingsSection(String section) =>
       _backend.setSettingsSection(section);
 
+  Future<void> setOpenShortcut(Map<String, Object?> recording) =>
+      _backend.setOpenShortcut(recording);
+
+  Future<void> pauseOpenShortcut(bool paused) =>
+      _backend.pauseOpenShortcut(paused);
+
   Future<void> recordOpenShortcut() => _backend.recordOpenShortcut();
+
+  Future<void> cancelOpenShortcutRecording() =>
+      _backend.cancelOpenShortcutRecording();
 
   void listenNativeEvents() => _backend.listenNativeEvents();
 }

@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import ClipwordCore
 import Cocoa
 import QuartzCore
@@ -77,6 +78,10 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     private var showGeneration = 0
     private var lastLeftClick = Date.distantPast
     private var paletteMouseAnchor: NSPoint?
+    private var isRecordingOpenShortcut = false
+    private var openShortcutRecordMonitor: Any?
+    private var openShortcutRecordResult: FlutterResult?
+    private var openShortcutRecordStartedAt = Date.distantPast
     private var pasteStackMonitor: Any?
     private var localHotkeyMonitor: Any?
     private var outsideClickMonitor: Any?
@@ -260,6 +265,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         }
         localHotkeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
+            guard !self.isRecordingOpenShortcut else { return event }
             guard let pressed = KeyboardShortcuts.Shortcut(event: event),
                   pressed == KeyboardShortcuts.getShortcut(for: .openClipword)
             else {
@@ -734,6 +740,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if sender === settingsWindow {
+            finishOpenShortcutRecording(nil)
             sender.orderOut(nil)
             if windowMode != "palette" {
                 NSApp.setActivationPolicy(.accessory)
@@ -1009,6 +1016,9 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
             result(nil)
         case "recordOpenShortcut":
             recordOpenShortcut(result: result)
+        case "cancelOpenShortcutRecording":
+            finishOpenShortcutRecording(nil)
+            result(nil)
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -1507,24 +1517,67 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         }
     }
 
+    private static let modifierKeyCodes: Set<UInt16> = [
+        UInt16(kVK_Shift), UInt16(kVK_RightShift),
+        UInt16(kVK_Control), UInt16(kVK_RightControl),
+        UInt16(kVK_Option), UInt16(kVK_RightOption),
+        UInt16(kVK_Command), UInt16(kVK_RightCommand),
+        UInt16(kVK_CapsLock), UInt16(kVK_Function),
+    ]
+
     private func recordOpenShortcut(result: @escaping FlutterResult) {
-        let recorder = KeyboardShortcuts.RecorderCocoa(for: .openClipword)
-        recorder.frame.size = NSSize(width: 180, height: 24)
-        let alert = NSAlert()
-        alert.messageText = "Open Clipword"
-        alert.informativeText = "Click the field and press the shortcut you want to use."
-        alert.accessoryView = recorder
-        alert.addButton(withTitle: "Done")
-        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] _ in
-            self?.persistOpenShortcut()
-            self?.emitSnapshot()
-            result(nil)
+        finishOpenShortcutRecording(nil)
+        openShortcutRecordResult = result
+        isRecordingOpenShortcut = true
+        KeyboardShortcuts.isPaused = true
+        openShortcutRecordStartedAt = Date()
+        openShortcutRecordMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.keyDown, .leftMouseDown]
+        ) { [weak self] event in
+            guard let self else { return event }
+            if event.type == .leftMouseDown {
+                if Date().timeIntervalSince(self.openShortcutRecordStartedAt) < 0.4 {
+                    return event
+                }
+                self.finishOpenShortcutRecording(nil)
+                return event
+            }
+            let flags = event.modifierFlags
+                .intersection(.deviceIndependentFlagsMask)
+                .subtracting([.capsLock, .numericPad, .help, .function])
+            if event.keyCode == UInt16(kVK_Escape), flags.isEmpty {
+                self.finishOpenShortcutRecording(nil)
+                return nil
+            }
+            if Self.modifierKeyCodes.contains(event.keyCode) {
+                return nil
+            }
+            guard !flags.subtracting(.shift).isEmpty,
+                  let shortcut = KeyboardShortcuts.Shortcut(event: event)
+            else {
+                NSSound.beep()
+                return nil
+            }
+            self.finishOpenShortcutRecording(shortcut)
+            return nil
         }
-        if let window = settingsWindow, window.isVisible {
-            alert.beginSheetModal(for: window, completionHandler: finish)
-        } else {
-            finish(alert.runModal())
+    }
+
+    private func finishOpenShortcutRecording(_ shortcut: KeyboardShortcuts.Shortcut?) {
+        let result = openShortcutRecordResult
+        openShortcutRecordResult = nil
+        if let monitor = openShortcutRecordMonitor {
+            NSEvent.removeMonitor(monitor)
+            openShortcutRecordMonitor = nil
         }
+        isRecordingOpenShortcut = false
+        KeyboardShortcuts.isPaused = false
+        if let shortcut {
+            KeyboardShortcuts.setShortcut(shortcut, for: .openClipword)
+            persistOpenShortcut()
+            emitSnapshot()
+        }
+        result?(nil)
     }
 
     private func prefsDict() -> [String: Any] {

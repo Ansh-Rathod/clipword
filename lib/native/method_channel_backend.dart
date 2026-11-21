@@ -266,8 +266,20 @@ class MethodChannelBackend extends ClipwordBackend {
       _methods.invokeMethod('setSettingsSection', {'section': section});
 
   @override
+  Future<void> setOpenShortcut(Map<String, Object?> recording) =>
+      _methods.invokeMethod('setOpenShortcut', recording);
+
+  @override
+  Future<void> pauseOpenShortcut(bool paused) =>
+      _methods.invokeMethod('pauseOpenShortcut', {'paused': paused});
+
+  @override
   Future<void> recordOpenShortcut() =>
       _methods.invokeMethod('recordOpenShortcut');
+
+  @override
+  Future<void> cancelOpenShortcutRecording() =>
+      _methods.invokeMethod('cancelOpenShortcutRecording');
 
   @override
   void listenNativeEvents() {

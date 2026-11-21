@@ -3,8 +3,6 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
-import '../native/windows/shortcut_recorder.dart';
-import '../native/windows/windows_backend.dart';
 import '../palette/palette_page.dart';
 import '../settings/settings_page.dart';
 import '../theme/tokens.dart';
@@ -23,14 +21,6 @@ class ClipwordApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (_isWindows) {
-      // Give the backend a context for backend-driven dialogs (shortcut
-      // recorder) and install the recorder hook once.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        WindowsBackend.appContext = context;
-      });
-      installShortcutRecorder();
-    }
     return WidgetsApp(
       title: 'Clipword',
       color: controller.snapshot.accentColor ?? ClipTokens.accent,

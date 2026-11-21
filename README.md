@@ -13,12 +13,11 @@ Clipboard manager for macOS and Windows. Flutter UI; macOS uses a native SwiftDa
 ## Requirements
 
 - macOS 15 (Sequoia) or later, **or** Windows 10/11 with Visual Studio Build Tools
-- Flutter (stable) — pinned via FVM (`flutter/.fvmrc`)
+- Flutter (stable) — pinned via FVM (`.fvmrc`)
 
 ## Build
 
 ```bash
-cd flutter
 flutter run -d macos        # macOS
 fvm flutter run -d windows  # Windows (FVM)
 ```

@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")/flutter"
+cd "$(dirname "$0")"
 
 CONFIGURATION="${1:-${CONFIGURATION:-Debug}}"
 MODE_ARGS=()
