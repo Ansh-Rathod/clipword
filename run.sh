@@ -28,4 +28,4 @@ else
 fi
 
 echo "==> Running Clipword (Flutter $DEVICE, $CONFIGURATION)..."
-exec "${FLUTTER[@]}" run -d "$DEVICE" "${MODE_ARGS[@]}"
+exec "${FLUTTER[@]}" run -d "$DEVICE" ${MODE_ARGS[@]+"${MODE_ARGS[@]}"}
