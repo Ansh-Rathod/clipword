@@ -44,6 +44,10 @@ class ClipwordController extends ChangeNotifier {
   bool get hasMore => snapshot.source == 'history' && _historyItems.length < itemCount;
   bool get dialogOpen => overlay == 'edit' || overlay == 'folder';
 
+  /// Dedicated settings-window controller (Windows multi-window) — non-null
+  /// once the backend created it; the app mounts `Window(controller:)` on it.
+  Object? get settingsController => channel.settingsWindowController;
+
   double get listScrollOffset =>
       snapshot.source == 'bookmarks' ? bookmarksScrollOffset : historyScrollOffset;
 

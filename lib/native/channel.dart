@@ -36,6 +36,10 @@ class ClipwordChannel {
   Stream<String> get paletteInputs => _backend.paletteInputs;
   Stream<Map<Object?, Object?>> get paletteNavs => _backend.paletteNavs;
 
+  /// Controller for the dedicated settings window (Windows multi-window);
+  /// null on macOS and before first open.
+  Object? get settingsWindowController => _backend.settingsWindowController;
+
   Future<ClipSnapshot> snapshot() => _backend.snapshot();
 
   Future<HistoryPage> loadItems({required int offset, int limit = 80}) =>

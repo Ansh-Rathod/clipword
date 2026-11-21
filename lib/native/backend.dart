@@ -30,6 +30,13 @@ abstract class ClipwordBackend {
   /// interpretKeyEvents selectors before the framework sees a key event.
   Stream<Map<Object?, Object?>> get paletteNavs;
 
+  /// Window controller for the dedicated settings window — non-null on
+  /// Windows once the window has been created, always null elsewhere (macOS
+  /// uses its own second-engine settings window).
+  /// Typed `Object?` to keep the internal `WindowController` type out of
+  /// this cross-platform contract.
+  Object? get settingsWindowController => null;
+
   Future<ClipSnapshot> snapshot();
 
   Future<HistoryPage> loadItems({required int offset, int limit = 80});

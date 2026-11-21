@@ -27,6 +27,11 @@ else
   FLUTTER=(flutter)
 fi
 
+if [ "$DEVICE" = "windows" ]; then
+  # Multi-window (settings window) is behind a flag on master — idempotent.
+  "${FLUTTER[@]}" config --enable-windowing >/dev/null
+fi
+
 echo "==> Running Clipword (Flutter $DEVICE, $CONFIGURATION)..."
 if [ ${#MODE_ARGS[@]} -gt 0 ]; then
   exec "${FLUTTER[@]}" run -d "$DEVICE" "${MODE_ARGS[@]}"

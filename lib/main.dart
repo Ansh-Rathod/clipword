@@ -8,8 +8,9 @@ Future<void> main() async {
   await boot(settingsWindow: false);
 }
 
-/// macOS-only second-engine entrypoint; Windows renders settings in the
-/// same window via `windowMode == 'settings'` and never uses this.
+/// macOS-only second-engine entrypoint; on Windows settings runs in a
+/// dedicated engine window created by `WinSettingsWindow` (mounted from the
+/// main view via `Window(controller:)`), not through this entrypoint.
 @pragma('vm:entry-point')
 Future<void> settingsMain() async {
   await boot(settingsWindow: true);

@@ -13,7 +13,8 @@ Clipboard manager for macOS and Windows. Flutter UI; macOS uses a native SwiftDa
 ## Requirements
 
 - macOS 15 (Sequoia) or later, **or** Windows 10/11 with Visual Studio Build Tools
-- Flutter (stable) — pinned via FVM (`.fvmrc`)
+- Flutter — pinned via FVM (`.fvmrc`); Windows uses a pinned **master** revision because the multi-window API (`WindowController`/`Window`) is still experimental and master-only
+- Windows builds also need `flutter config --enable-windowing` once per install (`run.sh` does it automatically)
 
 ## Build
 
@@ -41,7 +42,7 @@ History stays on this machine and is not deleted when you remove the app. Viewin
 
 ## Windows architecture
 
-`lib/native/windows/` ports the macOS `ClipwordHost` to Dart: clipboard capture/monitoring (Win32 FFI), SQLite history store, classifier, search, paste stack, prefs, windowing, menus, tray. `windows/runner/clipword_host.{h,cpp}` owns only what needs C++: the `WH_KEYBOARD_LL` hook (global open-hotkey + paste-stack Ctrl+V interception), WinRT OCR, exe-icon extraction (GDI+), and the tray icon (Shell_NotifyIcon). One window total — palette and settings swap content in the same HWND.
+`lib/native/windows/` ports the macOS `ClipwordHost` to Dart: clipboard capture/monitoring (Win32 FFI), SQLite history store, classifier, search, paste stack, prefs, windowing, menus, tray. `windows/runner/clipword_host.{h,cpp}` owns only what needs C++: the `WH_KEYBOARD_LL` hook (global open-hotkey + paste-stack Ctrl+V interception), WinRT OCR, exe-icon extraction (GDI+), and the tray icon (Shell_NotifyIcon). Two windows: the palette is the frameless runner HWND (hidden from taskbar/Alt+Tab via an invisible owner), while settings lives in a dedicated engine window (`FLUTTER_HOST_WINDOW`) created lazily through Flutter's `WindowController`/`Window` multi-window API and mounted under `ViewAnchor` — so each gets its own chrome, taskbar presence, and backdrop styling.
 
 On Windows 11 the HWND gets `DWMWA_WINDOW_CORNER_PREFERENCE` (round) + a backdrop in `flutter_window.cpp`/`clipword_host.cpp` — the Flutter surface is transparent where Dart paints nothing, so the material fills the whole window (frameless palette gets material + DWM shadow; framed settings gets a material titlebar). Settings → Window → Backdrop picks **Mica** (default, `DWMWA_SYSTEMBACKDROP_TYPE` + `DwmExtendFrameIntoClientArea(-1)`) or **Acrylic** (`SetWindowCompositionAttribute`, dark-tinted blur that covers the caption too — the frame extension is collapsed because `-1` + accent + focused composites black). The window is also an owned window (invisible `Static` owner) with `WS_EX_APPWINDOW` removed — taskbar/Alt+Tab skip owned windows while the full caption buttons stay. On Windows 10 the attributes are ignored — plain dark window.
 

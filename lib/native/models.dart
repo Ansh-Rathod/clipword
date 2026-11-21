@@ -223,6 +223,10 @@ class ClipSnapshot {
       );
 
   bool get accessibility => json['accessibility'] as bool? ?? false;
+
+  /// Windows 11+ — the Backdrop dropdown is disabled on Windows 10 (acrylic
+  /// only); the native layer also forces acrylic there regardless of pref.
+  bool get micaSupported => json['micaSupported'] as bool? ?? true;
   String get databaseSize => json['databaseSize'] as String? ?? '—';
   String get previewCacheSize => json['previewCacheSize'] as String? ?? 'Empty';
   String? get actionItemID =>

@@ -87,6 +87,32 @@ bool OsAppsDark() {
   return v == 0;
 }
 
+// Windows 11 = build 22000+. Mica/DWMSBT_* are Win11-only materials —
+// Windows 10 supports only the classic acrylic accent.
+bool IsWin11OrLater() {
+  static const bool result = [] {
+    // Matches RTL_OSVERSIONINFOW without dragging in winternl.h.
+    struct OsVersionInfoW {
+      DWORD size, major, minor, build, platform;
+      wchar_t csd[128];
+    };
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (!ntdll) return true;
+    const auto fn = reinterpret_cast<LONG(WINAPI*)(OsVersionInfoW*)>(
+        GetProcAddress(ntdll, "RtlGetVersion"));
+    if (!fn) return true;
+    OsVersionInfoW v{sizeof(v)};
+    return fn(&v) != 0 || v.build >= 22000;
+  }();
+  return result;
+}
+
+// Windows 10 silently ignores every Mica attribute — force acrylic there
+// so the persisted pref from a Win11 machine still yields a real material.
+std::string NormalizeBackdropMode(const std::string& mode) {
+  return IsWin11OrLater() ? mode : "acrylic";
+}
+
 void EnsureGdiPlus() {
   if (g_gdiplus_token != 0) return;
   Gdiplus::GdiplusStartupInput input;
@@ -386,44 +412,58 @@ void ClipwordHost::InstallTray(const std::wstring& icon_path,
 }
 
 void ClipwordHost::SetBackdrop(const std::string& mode) {
-  backdrop_mode_ = mode;
+  backdrop_mode_ = NormalizeBackdropMode(mode);
+  ApplyBackdrop(hwnd_, backdrop_mode_);
+}
+
+void ClipwordHost::ApplyBackdrop(HWND hwnd, const std::string& mode_in) {
+  if (!hwnd || !IsWindow(hwnd)) return;
+  const std::string mode = NormalizeBackdropMode(mode_in);
   // System-backdrop attribute: DWMSBT_DISABLE=1, DWMSBT_MAINWINDOW=2.
   constexpr DWORD kSystemBackdropAttr = 38;
   constexpr DWORD kCaptionColorAttr = 35;  // DWMWA_CAPTION_COLOR (Win11)
   constexpr DWORD kCaptionTextAttr = 36;   // DWMWA_TEXT_COLOR
+  constexpr DWORD kDarkModeAttr = 20;      // DWMWA_USE_IMMERSIVE_DARK_MODE
   constexpr COLORREF kColorDefault = 0xFFFFFFFF;  // DWMWA_COLOR_DEFAULT
+  // Secondary engine windows don't pass through Win32Window::UpdateTheme /
+  // ApplyChromeEffects — keep immersive-dark + corner rounding in sync here.
+  const DWORD dark = OsAppsDark() ? 1 : 0;
+  DwmSetWindowAttribute(hwnd, kDarkModeAttr, &dark, sizeof(dark));
+  const DWORD corner = 2;  // DWMWCP_ROUND
+  DwmSetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */,
+                        &corner, sizeof(corner));
   if (mode == "acrylic") {
     const DWORD off = 1;
-    DwmSetWindowAttribute(hwnd_, kSystemBackdropAttr, &off, sizeof(off));
+    DwmSetWindowAttribute(hwnd, kSystemBackdropAttr, &off, sizeof(off));
     // ABGR — dark translucent tint, clearly blurrier than flat mica.
-    SetAccent(hwnd_, kAccentAcrylic, 0xB32E2E2E);
+    SetAccent(hwnd, kAccentAcrylic, 0xB32E2E2E);
     // The accent policy only covers the CLIENT area on a focused window —
     // with the frame extended into the client (margins -1) DWM composites
     // black over everything. Collapse the extension and tint the caption to
     // the same dark tone so the titlebar visually follows the acrylic.
     const MARGINS none = {0, 0, 0, 0};
-    DwmExtendFrameIntoClientArea(hwnd_, &none);
+    DwmExtendFrameIntoClientArea(hwnd, &none);
     const COLORREF cap = 0x002E2E2E, txt = 0x00FFFFFF;
-    DwmSetWindowAttribute(hwnd_, kCaptionColorAttr, &cap, sizeof(cap));
-    DwmSetWindowAttribute(hwnd_, kCaptionTextAttr, &txt, sizeof(txt));
+    DwmSetWindowAttribute(hwnd, kCaptionColorAttr, &cap, sizeof(cap));
+    DwmSetWindowAttribute(hwnd, kCaptionTextAttr, &txt, sizeof(txt));
   } else {
-    SetAccent(hwnd_, kAccentDisabled);
+    SetAccent(hwnd, kAccentDisabled);
     const COLORREF def = kColorDefault;
-    DwmSetWindowAttribute(hwnd_, kCaptionColorAttr, &def, sizeof(def));
-    DwmSetWindowAttribute(hwnd_, kCaptionTextAttr, &def, sizeof(def));
+    DwmSetWindowAttribute(hwnd, kCaptionColorAttr, &def, sizeof(def));
+    DwmSetWindowAttribute(hwnd, kCaptionTextAttr, &def, sizeof(def));
     // DWMSBT_MAINWINDOW (2) — the opaque flat mica material. NOT
     // DWMSBT_TRANSIENTWINDOW (3, "Mica Alt"): that variant samples the
     // wallpaper translucently (reads as acrylic) and is only stable for
     // short-lived flyouts, not a persistent window.
     const DWORD type = mode == "none" ? 1 : 2;
-    DwmSetWindowAttribute(hwnd_, kSystemBackdropAttr, &type, sizeof(type));
+    DwmSetWindowAttribute(hwnd, kSystemBackdropAttr, &type, sizeof(type));
     const MARGINS all = {-1, -1, -1, -1};
-    DwmExtendFrameIntoClientArea(hwnd_, &all);
+    DwmExtendFrameIntoClientArea(hwnd, &all);
   }
   // Composition attributes don't repaint by themselves — without this the old
   // material stays on screen until some unrelated redraw, which reads as the
   // switch being applied one selection late (mica/acrylic appearing swapped).
-  RedrawWindow(hwnd_, nullptr, nullptr,
+  RedrawWindow(hwnd, nullptr, nullptr,
                RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
 }
 
@@ -441,7 +481,7 @@ void ClipwordHost::ShowTrayMenu() {
   HMENU menu = CreatePopupMenu();
   if (!menu) return;
   AppendMenuW(menu, MF_STRING, 1, L"Open Clipword");
-  AppendMenuW(menu, MF_STRING, 2, L"Settings…");
+  AppendMenuW(menu, MF_STRING, 2, L"Settings");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, 3, L"Quit Clipword");
 
@@ -551,14 +591,25 @@ void ClipwordHost::HandleMethodCall(
 
   if (name == "setWindowBackdrop") {
     std::string mode = "mica";
+    HWND target = hwnd_;
     if (const auto* args =
             std::get_if<flutter::EncodableMap>(call.arguments())) {
       auto m = args->find(flutter::EncodableValue("mode"));
       if (m != args->end()) {
         if (const auto* v = std::get_if<std::string>(&m->second)) mode = *v;
       }
+      // Optional target HWND — secondary windows (settings) pass their own.
+      auto h = args->find(flutter::EncodableValue("hwnd"));
+      if (h != args->end()) {
+        if (const auto* hw64 = std::get_if<int64_t>(&h->second)) {
+          target = reinterpret_cast<HWND>(static_cast<intptr_t>(*hw64));
+        } else if (const auto* hw32 = std::get_if<int32_t>(&h->second)) {
+          target = reinterpret_cast<HWND>(static_cast<intptr_t>(*hw32));
+        }
+      }
     }
-    SetBackdrop(mode);
+    backdrop_mode_ = NormalizeBackdropMode(mode);
+    ApplyBackdrop(target, backdrop_mode_);
     result->Success();
     return;
   }

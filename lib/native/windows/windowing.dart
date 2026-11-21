@@ -7,10 +7,47 @@ import 'package:win32/win32.dart';
 
 import 'prefs.dart';
 
-/// Palette/settings window management — one window resized/re-flagged between
-/// modes (port of `setupPalette`/`setupSettings`/`swapContent`, minus the
-/// second window). Pure Win32 on the runner HWND: plugins couldn't find a
-/// hidden-at-boot window reliably, so this talks to the window directly.
+/// Work area of the monitor under the mouse cursor — shared by the palette
+/// positioner and the settings window's centering.
+Rect cursorWorkArea() {
+  final pt = calloc<POINT>();
+  final info = calloc<MONITORINFO>();
+  try {
+    GetCursorPos(pt);
+    final hMon = MonitorFromPoint(pt.ref, MONITOR_DEFAULTTONEAREST);
+    info.ref.cbSize = sizeOf<MONITORINFO>();
+    if (GetMonitorInfo(hMon, info) == 0) {
+      return const Rect.fromLTWH(0, 0, 1920, 1080);
+    }
+    final r = info.ref.rcWork;
+    return Rect.fromLTWH(r.left.toDouble(), r.top.toDouble(),
+        (r.right - r.left).toDouble(), (r.bottom - r.top).toDouble());
+  } finally {
+    calloc.free(info);
+    calloc.free(pt);
+  }
+}
+
+/// Foreground-activate a top-level HWND. Same AttachThreadInput dance as
+/// WinPaste: SetForegroundWindow is restricted when the caller isn't the
+/// foreground process.
+void focusWindow(int hwnd) {
+  if (hwnd == 0) return;
+  final foregroundThread =
+      GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
+  final targetThread = GetWindowThreadProcessId(hwnd, nullptr);
+  final currentThread = GetCurrentThreadId();
+  AttachThreadInput(currentThread, foregroundThread, TRUE);
+  AttachThreadInput(currentThread, targetThread, TRUE);
+  SetForegroundWindow(hwnd);
+  BringWindowToTop(hwnd);
+  AttachThreadInput(currentThread, foregroundThread, FALSE);
+  AttachThreadInput(currentThread, targetThread, FALSE);
+}
+
+/// Palette window management — the runner HWND stays frameless/topmost and
+/// hidden from taskbar/Alt+Tab. Settings lives in a separate engine window
+/// (`settings_window.dart`) since the official multi-window migration.
 class WinWindowing {
   WinWindowing({
     required this.onHide,
@@ -19,7 +56,6 @@ class WinWindowing {
   });
 
   static const paletteSize = Size(720, 520);
-  static const settingsSize = Size(780, 600);
 
   final void Function() onHide;
   final void Function() onFocusLost;
@@ -72,10 +108,11 @@ class WinWindowing {
     _setTaskbarVisible(false);
   }
 
-  /// Whether the window gets a taskbar button / Alt+Tab entry. The invisible
-  /// `Static` owner (set in the runner) hides it normally; WS_EX_APPWINDOW
-  /// forces presence even on an owned window — wanted in settings mode only.
-  /// Do NOT add WS_EX_TOOLWINDOW: it shrinks the caption to a lone close.
+  /// Taskbar/Alt+Tab presence. The palette must stay hidden: the invisible
+  /// `Static` owner (set in the runner) hides it normally and WS_EX_APPWINDOW
+  /// would override that. The settings window is a separate HWND and manages
+  /// its own presence. Do NOT add WS_EX_TOOLWINDOW: it shrinks the caption to
+  /// a lone close.
   void _setTaskbarVisible(bool visible) {
     final ex = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
     final next = visible ? (ex | WS_EX_APPWINDOW) : (ex & ~WS_EX_APPWINDOW);
@@ -102,37 +139,6 @@ class WinWindowing {
     if (wasHidden) _positionForPref();
     _show();
     if (activate) _focus();
-  }
-
-  Future<void> showSettings() async {
-    if (windowMode == 'settings') {
-      _focus();
-      return;
-    }
-    windowMode = 'settings';
-    _setAlwaysOnTop(false);
-    _setFrameless(false);
-    _setTaskbarVisible(true);
-    _setSize(settingsSize);
-    _centerOnCursorScreen();
-    _show();
-    _focus();
-    onModeChanged(windowMode);
-  }
-
-  /// Back from settings → palette (mirrors `swapContent(backToPalette)`).
-  Future<void> backToPalette({String? forSource}) async {
-    if (forSource != null) source = forSource;
-    windowMode = 'palette';
-    _setFrameless(true);
-    _setAlwaysOnTop(true);
-    _setTaskbarVisible(false);
-    _setSize(Size(
-        paletteSize.width, _paletteHeightOverride ?? paletteSize.height));
-    onModeChanged(windowMode);
-    _positionForPref();
-    _show();
-    _focus();
   }
 
   Future<void> hide() async {
@@ -182,26 +188,6 @@ class WinWindowing {
     }
   }
 
-  /// Work area of the monitor under the mouse cursor.
-  static Rect _cursorWorkArea() {
-    final pt = calloc<POINT>();
-    final info = calloc<MONITORINFO>();
-    try {
-      GetCursorPos(pt);
-      final hMon = MonitorFromPoint(pt.ref, MONITOR_DEFAULTTONEAREST);
-      info.ref.cbSize = sizeOf<MONITORINFO>();
-      if (GetMonitorInfo(hMon, info) == 0) {
-        return const Rect.fromLTWH(0, 0, 1920, 1080);
-      }
-      final r = info.ref.rcWork;
-      return Rect.fromLTWH(r.left.toDouble(), r.top.toDouble(),
-          (r.right - r.left).toDouble(), (r.bottom - r.top).toDouble());
-    } finally {
-      calloc.free(info);
-      calloc.free(pt);
-    }
-  }
-
   /// Primary work area (taskbar side — used for 'menuBar'/tray positioning).
   static Rect _primaryWorkArea() {
     final rect = calloc<RECT>();
@@ -218,7 +204,7 @@ class WinWindowing {
   }
 
   void _centerOnCursorScreen() {
-    final wa = _cursorWorkArea();
+    final wa = cursorWorkArea();
     final size = _size();
     _setPosition(Offset(
       wa.left + (wa.width - size.width) / 2,
@@ -236,7 +222,7 @@ class WinWindowing {
     } finally {
       calloc.free(pt);
     }
-    final wa = _cursorWorkArea();
+    final wa = cursorWorkArea();
     final size = _size();
     final x = (cx - size.width / 2).clamp(wa.left, wa.right - size.width);
     final y = (cy + padding).clamp(wa.top, wa.bottom - size.height);
@@ -279,22 +265,7 @@ class WinWindowing {
 
   void _hideWindow() => ShowWindow(hwnd, SW_HIDE);
 
-  void _focus() {
-    final target = hwnd;
-    if (target == 0) return;
-    // Same AttachThreadInput dance as WinPaste: SetForegroundWindow is
-    // restricted when the caller isn't the foreground process.
-    final foregroundThread =
-        GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
-    final targetThread = GetWindowThreadProcessId(target, nullptr);
-    final currentThread = GetCurrentThreadId();
-    AttachThreadInput(currentThread, foregroundThread, TRUE);
-    AttachThreadInput(currentThread, targetThread, TRUE);
-    SetForegroundWindow(target);
-    BringWindowToTop(target);
-    AttachThreadInput(currentThread, foregroundThread, FALSE);
-    AttachThreadInput(currentThread, targetThread, FALSE);
-  }
+  void _focus() => focusWindow(hwnd);
 
   Size _size() {
     final rect = calloc<RECT>();

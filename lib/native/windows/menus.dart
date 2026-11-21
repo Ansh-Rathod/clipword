@@ -25,7 +25,9 @@ class WinMenus {
   WinMenus._();
 
   /// Our runner HWND — the runner class name is shared by every Flutter
-  /// desktop app (e.g. RustDesk), so filter matches by owning process.
+  /// desktop app (e.g. RustDesk), so filter matches by owning process. Only
+  /// the palette lives there; secondary windows (settings) have their own
+  /// HWNDs and pass them explicitly via [popup]'s `hwnd`.
   static int _findWindow() {
     final cls =
         'FLUTTER_RUNNER_WIN32_WINDOW'.toNativeUtf16(allocator: calloc);
@@ -46,12 +48,15 @@ class WinMenus {
   }
 
   /// Shows a popup at screen coordinates; returns the chosen id or null.
+  /// [hwnd] is the owner window — the settings HWND when a menu is opened
+  /// from settings, else the palette HWND is discovered automatically.
   static Future<String?> popup(
     List<MenuChoice> items, {
     Offset? screenPoint,
+    int? hwnd,
     required void Function(bool tracking) onTracking,
   }) async {
-    final hwnd = _findWindow();
+    hwnd ??= _findWindow();
     if (hwnd == 0) return null;
 
     onTracking(true);

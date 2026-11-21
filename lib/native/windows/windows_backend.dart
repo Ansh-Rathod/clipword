@@ -22,11 +22,49 @@ import 'monitor.dart';
 import 'paste.dart';
 import 'prefs.dart';
 import 'search.dart';
+import 'settings_window.dart';
 import 'snapshot_codec.dart';
 import 'store.dart';
 import 'time_filter.dart';
 import 'tray.dart';
 import 'windowing.dart';
+
+base class _OsVersionInfo extends Struct {
+  @Uint32()
+  external int dwOSVersionInfoSize;
+  @Uint32()
+  external int dwMajorVersion;
+  @Uint32()
+  external int dwMinorVersion;
+  @Uint32()
+  external int dwBuildNumber;
+  @Uint32()
+  external int dwPlatformId;
+  @Array(128)
+  external Array<Uint16> szCSDVersion;
+}
+
+/// Windows 11 (build 22000+) supports the DWMSBT_*/Mica materials; Windows
+/// 10 only has the classic acrylic accent — the dropdown is disabled there
+/// and the native layer maps every requested mode to acrylic as well.
+final bool _micaSupported = () {
+  try {
+    final ntdll = DynamicLibrary.open('ntdll.dll');
+    final rtlGetVersion = ntdll.lookupFunction<
+        Int32 Function(Pointer<_OsVersionInfo>),
+        int Function(Pointer<_OsVersionInfo>)>('RtlGetVersion');
+    final v = calloc<_OsVersionInfo>();
+    try {
+      v.ref.dwOSVersionInfoSize = sizeOf<_OsVersionInfo>();
+      if (rtlGetVersion(v) != 0) return true;
+      return v.ref.dwBuildNumber >= 22000;
+    } finally {
+      calloc.free(v);
+    }
+  } catch (_) {
+    return true;
+  }
+}();
 
 /// Windows implementation of [ClipwordBackend] — the `ClipwordHost` port.
 /// Everything macOS does in Swift is reimplemented here in Dart; only the
@@ -40,6 +78,8 @@ class WindowsBackend extends ClipwordBackend {
   final _search = SearchService();
   final _monitor = ClipboardMonitor();
   late final WinWindowing _windowing;
+  final WinSettingsWindow _settings =
+      WinSettingsWindow(channel: WindowsBackend._win);
   late final WinTray _tray;
   late final WinHotkeys _hotkeys;
 
@@ -74,6 +114,11 @@ class WindowsBackend extends ClipwordBackend {
   Stream<String> get paletteInputs => _paletteInput.stream;
   @override
   Stream<Map<Object?, Object?>> get paletteNavs => _paletteNav.stream;
+
+  /// Dedicated settings-window controller — non-null once created; the app
+  /// mounts its `Window(controller:)` subtree off this.
+  @override
+  Object? get settingsWindowController => _settings.controller;
 
   String _paletteSource = 'history';
   String _settingsSection = 'general';
@@ -112,6 +157,13 @@ class WindowsBackend extends ClipwordBackend {
       onModeChanged: _emitWindowMode,
     );
     await _windowing.init();
+
+    // Dedicated settings window — created lazily on first showSettings;
+    // onCreated kicks a snapshot so the app mounts its Window subtree.
+    _settings
+      ..onCreated = emitSnapshot
+      ..onHidden = emitSnapshot;
+
     _applyBackdrop();
 
     _tray = WinTray(
@@ -190,10 +242,6 @@ class WindowsBackend extends ClipwordBackend {
       _windowing.hide();
       return;
     }
-    if (_windowing.windowMode == 'settings') {
-      _windowing.hide();
-      return;
-    }
     WinPaste.saveFrontmost();
     _windowing.showPalette(forSource: _paletteSource);
   }
@@ -235,6 +283,7 @@ class WindowsBackend extends ClipwordBackend {
               'itemID': s.lastAction!.itemId,
               'token': s.lastAction!.token,
             },
+      'micaSupported': _micaSupported,
       'accentColor': WinAccent.accent(),
       'accentFill': WinAccent.accent(),
       'accentForeground': WinAccent.foreground(),
@@ -614,18 +663,25 @@ class WindowsBackend extends ClipwordBackend {
     _windowing.hide();
   }
 
-  /// x/y are Flutter logical px inside the window's client area — convert to
-  /// physical px via the window's DPI, then to screen coords.
+  /// HWND menus/pickers should anchor to — the settings window while it's
+  /// foreground (its own HWND), else the palette. `TrackPopupMenu` needs the
+  /// calling window's handle for correct modality.
+  int _menuOwnerHwnd() =>
+      _settings.isForeground ? _settings.hwnd : _windowing.hwnd;
+
+  /// x/y are Flutter logical px inside the calling window's client area —
+  /// convert to physical px via that window's DPI, then to screen coords.
   Future<Offset> _toScreenPoint(double? x, double? y) async {
     final pt = calloc.allocate<POINT>(sizeOf<POINT>());
     try {
       if (x == null || y == null) {
         GetCursorPos(pt);
       } else {
-        final scale = GetDpiForWindow(_windowing.hwnd) / 96.0;
+        final owner = _menuOwnerHwnd();
+        final scale = GetDpiForWindow(owner) / 96.0;
         pt.ref.x = (x * scale).round();
         pt.ref.y = (y * scale).round();
-        ClientToScreen(_windowing.hwnd, pt);
+        ClientToScreen(owner, pt);
       }
       return Offset(pt.ref.x.toDouble(), pt.ref.y.toDouble());
     } finally {
@@ -662,7 +718,10 @@ class WindowsBackend extends ClipwordBackend {
         MenuChoice('pin', item.isPinned ? 'Unpin' : 'Pin'),
         const MenuChoice('sep3', '—', enabled: false),
         const MenuChoice('delete', 'Delete'),
-      ], screenPoint: point, onTracking: _setMenuTracking);
+      ],
+          screenPoint: point,
+          hwnd: _menuOwnerHwnd(),
+          onTracking: _setMenuTracking);
       if (choice == null) return;
       switch (choice) {
         case 'copy':
@@ -721,7 +780,10 @@ class WindowsBackend extends ClipwordBackend {
           const MenuChoice('newfolder', 'New Folder…'),
         ]),
         const MenuChoice('remove', 'Remove Bookmark'),
-      ], screenPoint: point, onTracking: _setMenuTracking);
+      ],
+          screenPoint: point,
+          hwnd: _menuOwnerHwnd(),
+          onTracking: _setMenuTracking);
       if (choice == null) return;
       switch (choice) {
         case 'copy':
@@ -763,7 +825,10 @@ class WindowsBackend extends ClipwordBackend {
         const MenuChoice('rename', 'Rename…'),
         const MenuChoice('sep1', '—', enabled: false),
         const MenuChoice('delete', 'Delete Folder'),
-      ], screenPoint: point, onTracking: _setMenuTracking);
+      ],
+          screenPoint: point,
+          hwnd: _menuOwnerHwnd(),
+          onTracking: _setMenuTracking);
       if (choice == null) return;
       switch (choice) {
         case 'toggle':
@@ -827,7 +892,7 @@ class WindowsBackend extends ClipwordBackend {
                   ? '✓ ${a.name} (${a.count})'
                   : '${a.name} (${a.count})'),
       ]),
-    ], onTracking: _setMenuTracking);
+    ], hwnd: _menuOwnerHwnd(), onTracking: _setMenuTracking);
     if (choice == null) return;
     if (choice == 'clear') {
       s.activeCategory = null;
@@ -865,7 +930,7 @@ class WindowsBackend extends ClipwordBackend {
     final choice = await WinMenus.popup([
       for (final item in items)
         MenuChoice(item, item == current ? '✓ $item' : item),
-    ], onTracking: _setMenuTracking);
+    ], hwnd: _menuOwnerHwnd(), onTracking: _setMenuTracking);
     return choice;
   }
 
@@ -874,16 +939,16 @@ class WindowsBackend extends ClipwordBackend {
   @override
   Future<void> showSettings({String section = 'general'}) async {
     _settingsSection = section;
-    await _windowing.showSettings();
-    emitSnapshot();
+    emitSnapshot(); // pick up the requested section before the window shows
+    await _settings.open();
   }
 
   @override
   Future<void> hideWindow() async {
-    // In settings mode the back affordance returns to the palette;
-    // otherwise hide (mirrors swapContent/hidePalette on macOS).
-    if (_windowing.windowMode == 'settings') {
-      _windowing.hide();
+    // Hides whichever top-level is active — settings when it's foreground,
+    // else the palette.
+    if (_settings.isForeground) {
+      _settings.hide();
     } else {
       hidePalette();
     }
@@ -905,6 +970,7 @@ class WindowsBackend extends ClipwordBackend {
     }
     Prefs.saveNow();
     store.dispose();
+    _settings.dispose();
     try {
       await _tray.dispose();
     } catch (_) {}
@@ -933,12 +999,13 @@ class WindowsBackend extends ClipwordBackend {
     emitSnapshot();
   }
 
-  /// Pushes the persisted backdrop mode ('mica' | 'acrylic' | 'none') to the
-  /// native window — applies to the single HWND regardless of current mode.
+  /// Pushes the persisted backdrop mode ('mica' | 'acrylic' | 'none') to
+  /// every live window — palette HWND plus the settings HWND when created.
   void _applyBackdrop() {
     _win
         .invokeMethod('setWindowBackdrop', {'mode': Prefs.get<String>('windowBackdrop')})
         .catchError((_) => null);
+    _settings.applyBackdrop();
   }
 
   @override
@@ -946,7 +1013,7 @@ class WindowsBackend extends ClipwordBackend {
 
   @override
   Future<List<String>> pickIgnoredApps() async {
-    final paths = _pickExeFiles(_windowing.hwnd);
+    final paths = _pickExeFiles(_menuOwnerHwnd());
     if (paths.isEmpty) return Prefs.list('ignoredApps');
     final apps = Prefs.list('ignoredApps');
     for (final path in paths) {

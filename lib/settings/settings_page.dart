@@ -709,14 +709,19 @@ class GeneralPane extends StatelessWidget {
             if (_isWin)
               _PrefRow(
                 label: 'Backdrop',
+                caption: controller.snapshot.micaSupported
+                    ? null
+                    : 'Windows 10 supports Acrylic only',
                 palette: palette,
                 child: _MenuValue(
-                  value:
-                      {
-                        'mica': 'Mica',
-                        'acrylic': 'Acrylic',
-                      }[prefs.windowBackdrop] ??
-                      prefs.windowBackdrop,
+                  enabled: controller.snapshot.micaSupported,
+                  value: controller.snapshot.micaSupported
+                      ? ({
+                            'mica': 'Mica',
+                            'acrylic': 'Acrylic',
+                          }[prefs.windowBackdrop] ??
+                          prefs.windowBackdrop)
+                      : 'Acrylic',
                   onTap: () async {
                     final picked = await controller.channel.showChoices(
                       ['Mica', 'Acrylic'],
@@ -1416,10 +1421,12 @@ class _MenuValue extends StatefulWidget {
     required this.value,
     required this.onTap,
     required this.palette,
+    this.enabled = true,
   });
   final String value;
   final VoidCallback onTap;
   final ClipPalette palette;
+  final bool enabled;
 
   @override
   State<_MenuValue> createState() => _MenuValueState();
@@ -1431,11 +1438,15 @@ class _MenuValueState extends State<_MenuValue> {
   @override
   Widget build(BuildContext context) {
     return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => hovered = true),
+      cursor: widget.enabled
+          ? SystemMouseCursors.click
+          : SystemMouseCursors.basic,
+      onEnter: (_) {
+        if (widget.enabled) setState(() => hovered = true);
+      },
       onExit: (_) => setState(() => hovered = false),
       child: GestureDetector(
-        onTap: widget.onTap,
+        onTap: widget.enabled ? widget.onTap : null,
         child: DecoratedBox(
           decoration: BoxDecoration(
             color: hovered
@@ -1450,7 +1461,12 @@ class _MenuValueState extends State<_MenuValue> {
               children: [
                 Text(
                   widget.value,
-                  style: TextStyle(fontSize: 13, color: widget.palette.controlLabel),
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: widget.enabled
+                        ? widget.palette.controlLabel
+                        : widget.palette.secondary,
+                  ),
                 ),
                 const SizedBox(width: 6),
                 Icon(

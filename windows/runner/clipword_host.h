@@ -23,14 +23,14 @@ class ClipwordHost {
   ClipwordHost(flutter::BinaryMessenger* messenger, HWND hwnd);
   ~ClipwordHost();
 
-  // "mica" | "acrylic" | "none" — DWM system backdrop or the classic
-  // SetWindowCompositionAttribute acrylic. Ignored gracefully on Win10.
+  // "mica" | "acrylic" | "none" — records the mode and applies it to the
+  // runner HWND. See ApplyBackdrop for the per-window variant.
   void SetBackdrop(const std::string& mode);
 
   // Re-applies the current backdrop. DWM drops DWMSBT_SYSTEMBACKDROP_TYPE
   // when a window goes through hide→show (the extended frame falls back to
   // raw glass blur), so the runner calls this on show/activate.
-  void RefreshBackdrop() { SetBackdrop(backdrop_mode_); }
+  void RefreshBackdrop() { ApplyBackdrop(hwnd_, backdrop_mode_); }
 
   ClipwordHost(const ClipwordHost&) = delete;
   ClipwordHost& operator=(const ClipwordHost&) = delete;
@@ -50,6 +50,10 @@ class ClipwordHost {
   // Applies the current backdrop material + dark caption attrs to a #32768
   // popup-menu window so context menus / dropdowns follow the app's material.
   void ApplyMenuMaterial(HWND menu);
+
+  // Applies a backdrop mode to any HWND — the runner HWND or the engine's
+  // secondary (settings) windows, which Dart reaches via windowHandle.
+  void ApplyBackdrop(HWND hwnd, const std::string& mode);
 
   void InstallTray(const std::wstring& icon_path, const std::wstring& tooltip);
   void RemoveTray();
