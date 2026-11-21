@@ -1529,7 +1529,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         finishOpenShortcutRecording(nil)
         openShortcutRecordResult = result
         isRecordingOpenShortcut = true
-        KeyboardShortcuts.isPaused = true
+        KeyboardShortcuts.isEnabled = false
         openShortcutRecordStartedAt = Date()
         openShortcutRecordMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.keyDown, .leftMouseDown]
@@ -1571,7 +1571,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
             openShortcutRecordMonitor = nil
         }
         isRecordingOpenShortcut = false
-        KeyboardShortcuts.isPaused = false
+        KeyboardShortcuts.isEnabled = true
         if let shortcut {
             KeyboardShortcuts.setShortcut(shortcut, for: .openClipword)
             persistOpenShortcut()
