@@ -23,14 +23,13 @@ SingleActivator _mod(
   LogicalKeyboardKey key, {
   bool shift = false,
   bool alt = false,
-}) =>
-    SingleActivator(
-      key,
-      control: _isWindows,
-      meta: !_isWindows,
-      shift: shift,
-      alt: alt,
-    );
+}) => SingleActivator(
+  key,
+  control: _isWindows,
+  meta: !_isWindows,
+  shift: shift,
+  alt: alt,
+);
 
 /// Label for the primary modifier keycap: '⌘' macOS, 'Ctrl' Windows.
 String get _modLabel => _isWindows ? 'Ctrl' : '⌘';
@@ -62,6 +61,7 @@ class _PalettePageState extends State<PalettePage> {
   final _listController = ListController();
   final _scrollController = ScrollController();
   final _selectedRowKey = GlobalKey();
+  final _actionsKey = GlobalKey();
   String _windowMode = '';
   String _listSource = '';
   String? _overlay;
@@ -171,16 +171,17 @@ class _PalettePageState extends State<PalettePage> {
     final shift = keyboard.isShiftPressed;
     final key = event.logicalKey;
     if (meta && !alt && !shift && key == LogicalKeyboardKey.keyA) {
-      _search.selection =
-          TextSelection(baseOffset: 0, extentOffset: _search.text.length);
+      _search.selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: _search.text.length,
+      );
       _focusSearch();
       return true;
     }
     if (meta && !alt && !shift && key == LogicalKeyboardKey.keyC) {
       final sel = _search.selection;
       if (_searchFocus.hasFocus && sel.isValid && !sel.isCollapsed) {
-        Clipboard.setData(
-            ClipboardData(text: sel.textInside(_search.text)));
+        Clipboard.setData(ClipboardData(text: sel.textInside(_search.text)));
       } else {
         c.copySelection();
       }
@@ -304,10 +305,7 @@ class _PalettePageState extends State<PalettePage> {
     final sel = _search.selection;
     final start = sel.isValid ? sel.start : text.length;
     final end = sel.isValid ? sel.end : text.length;
-    _setSearchValue(
-      text.replaceRange(start, end, input),
-      start + input.length,
-    );
+    _setSearchValue(text.replaceRange(start, end, input), start + input.length);
     _focusSearch();
   }
 
@@ -595,9 +593,11 @@ class _PalettePageState extends State<PalettePage> {
     _focusList();
   }
 
-  void _openItemActions({String? kind, String? id}) {
-    final box =
-        _selectedRowKey.currentContext?.findRenderObject() as RenderBox?;
+  void _openItemActions({String? kind, String? id, bool atButton = false}) {
+    // Taps anchor the menu to the footer pill it was opened from; the
+    // keyboard path keeps the selected-row anchor (context-menu convention).
+    final key = atButton ? _actionsKey : _selectedRowKey;
+    final box = key.currentContext?.findRenderObject() as RenderBox?;
     Offset? origin;
     if (box != null && box.hasSize && box.attached) {
       origin = box.localToGlobal(Offset.zero);
@@ -650,12 +650,14 @@ class _PalettePageState extends State<PalettePage> {
           ),
           const SingleActivator(LogicalKeyboardKey.enter):
               const _ActivateIntent(),
-          _mod(LogicalKeyboardKey.enter):
-              const _ActivateIntent(secondary: true),
+          _mod(LogicalKeyboardKey.enter): const _ActivateIntent(
+            secondary: true,
+          ),
           const SingleActivator(LogicalKeyboardKey.numpadEnter):
               const _ActivateIntent(),
-          _mod(LogicalKeyboardKey.numpadEnter):
-              const _ActivateIntent(secondary: true),
+          _mod(LogicalKeyboardKey.numpadEnter): const _ActivateIntent(
+            secondary: true,
+          ),
           _mod(LogicalKeyboardKey.keyB): const _ToggleSourceIntent(),
           _mod(LogicalKeyboardKey.keyK): const _ActionsIntent(),
           _mod(LogicalKeyboardKey.slash): const _FocusSearchIntent(),
@@ -1001,7 +1003,11 @@ class _PalettePageState extends State<PalettePage> {
                   cursor: SystemMouseCursors.click,
                   child: GestureDetector(
                     key: selected ? _selectedRowKey : null,
-                    onTap: () {
+                    // onTap waits out the double-tap arena (~300ms) whenever
+                    // onDoubleTap exists — select on pointer-down instead,
+                    // like a native listbox; re-selecting on a double-click's
+                    // first tap is harmless.
+                    onTapDown: (_) {
                       c.selectEntry(entry.kind, entry.id ?? '');
                       _keepArrowKeys();
                     },
@@ -1060,7 +1066,9 @@ class _PalettePageState extends State<PalettePage> {
             '${entry.count} items',
             style: TextStyle(
               fontSize: 11,
-              color: emphasized ? p.onAccent.withValues(alpha: 0.8) : p.secondary,
+              color: emphasized
+                  ? p.onAccent.withValues(alpha: 0.8)
+                  : p.secondary,
             ),
           ),
         ],
@@ -1155,14 +1163,17 @@ class _PalettePageState extends State<PalettePage> {
               child: Row(
                 children: [
                   if (primary != null)
-                    GestureDetector(
-                      onTap: () => c.activatePrimary(),
-                      child: Row(
-                        children: [
-                          Text(primary),
-                          const SizedBox(width: 6),
-                          Keycap(iconData: Icons.keyboard_return, palette: p),
-                        ],
+                    MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: GestureDetector(
+                        onTap: () => c.activatePrimary(),
+                        child: Row(
+                          children: [
+                            Text(primary),
+                            const SizedBox(width: 6),
+                            Keycap(iconData: Icons.keyboard_return, palette: p),
+                          ],
+                        ),
                       ),
                     ),
                   if (secondary != null) ...[
@@ -1176,16 +1187,19 @@ class _PalettePageState extends State<PalettePage> {
                         ),
                       ),
                     ),
-                    GestureDetector(
-                      onTap: () => c.activatePrimary(secondary: true),
-                      child: Row(
-                        children: [
-                          Text(secondary),
-                          const SizedBox(width: 6),
-                          Keycap(text: _modLabel, palette: p),
-                          const SizedBox(width: 2),
-                          Keycap(iconData: Icons.keyboard_return, palette: p),
-                        ],
+                    MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: GestureDetector(
+                        onTap: () => c.activatePrimary(secondary: true),
+                        child: Row(
+                          children: [
+                            Text(secondary),
+                            const SizedBox(width: 6),
+                            Keycap(text: _modLabel, palette: p),
+                            const SizedBox(width: 2),
+                            Keycap(iconData: Icons.keyboard_return, palette: p),
+                          ],
+                        ),
                       ),
                     ),
                   ],
@@ -1201,16 +1215,20 @@ class _PalettePageState extends State<PalettePage> {
                       ),
                     ),
                   if (showActions)
-                    GestureDetector(
-                      onTap: _openItemActions,
-                      child: Row(
-                        children: [
-                          const Text('Actions'),
-                          const SizedBox(width: 6),
-                          Keycap(text: _modLabel, palette: p),
-                          const SizedBox(width: 2),
-                          Keycap(text: 'K', palette: p),
-                        ],
+                    MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: GestureDetector(
+                        key: _actionsKey,
+                        onTap: () => _openItemActions(atButton: true),
+                        child: Row(
+                          children: [
+                            const Text('Actions'),
+                            const SizedBox(width: 6),
+                            Keycap(text: _modLabel, palette: p),
+                            const SizedBox(width: 2),
+                            Keycap(text: 'K', palette: p),
+                          ],
+                        ),
                       ),
                     ),
                 ],
@@ -2016,7 +2034,6 @@ class _FocusSearchIntent extends Intent {
 class _QuitIntent extends Intent {
   const _QuitIntent();
 }
-
 
 class _EditItemIntent extends Intent {
   const _EditItemIntent();

@@ -35,21 +35,24 @@ class ClipwordController extends ChangeNotifier {
   Timer? _menuGuardTimer;
   int _detailGen = 0;
   String? _loadedDetailKey;
+  String? _scheduledKey;
   bool menuTracking = false;
   double historyScrollOffset = 0;
   double bookmarksScrollOffset = 0;
   bool holdScrollUpdates = false;
 
   Selection? get selection => _localSelection ?? snapshot.selection;
-  bool get hasMore => snapshot.source == 'history' && _historyItems.length < itemCount;
+  bool get hasMore =>
+      snapshot.source == 'history' && _historyItems.length < itemCount;
   bool get dialogOpen => overlay == 'edit' || overlay == 'folder';
 
   /// Dedicated settings-window controller (Windows multi-window) — non-null
   /// once the backend created it; the app mounts `Window(controller:)` on it.
   Object? get settingsController => channel.settingsWindowController;
 
-  double get listScrollOffset =>
-      snapshot.source == 'bookmarks' ? bookmarksScrollOffset : historyScrollOffset;
+  double get listScrollOffset => snapshot.source == 'bookmarks'
+      ? bookmarksScrollOffset
+      : historyScrollOffset;
 
   void setListScrollOffset(double offset) {
     if (holdScrollUpdates) return;
@@ -89,7 +92,10 @@ class ClipwordController extends ChangeNotifier {
     channel.edits.listen((args) async {
       editKind = args['kind'] as String?;
       editId = args['id'] as String?;
-      final detail = await channel.itemDetail(editKind ?? 'history', editId ?? '');
+      final detail = await channel.itemDetail(
+        editKind ?? 'history',
+        editId ?? '',
+      );
       editText = detail?['plainText'] as String? ?? '';
       overlay = 'edit';
       notifyListeners();
@@ -267,7 +273,10 @@ class ClipwordController extends ChangeNotifier {
     final revision = listRevision;
     try {
       while (_historyItems.length < itemCount) {
-        final page = await channel.loadItems(offset: _historyItems.length, limit: 250);
+        final page = await channel.loadItems(
+          offset: _historyItems.length,
+          limit: 250,
+        );
         if (revision != listRevision) return;
         if (page.items.isEmpty) break;
         _appendPage(page);
@@ -308,10 +317,11 @@ class ClipwordController extends ChangeNotifier {
     }
   }
 
-  void _scheduleDetail() {
+  void _scheduleDetail([Duration delay = const Duration(seconds: 1)]) {
     final selection = this.selection;
     if (selection == null || selection.kind == 'folder') {
       _detailTimer?.cancel();
+      _scheduledKey = null;
       detail = null;
       preview = null;
       _loadedDetailKey = null;
@@ -326,9 +336,15 @@ class ClipwordController extends ChangeNotifier {
       detail = null;
       preview = null;
     }
+    // Keep a pending load for the same key — the snapshot echo re-arms the
+    // timer with the 1s default and must not displace the click's short one.
+    if (_scheduledKey == key && (_detailTimer?.isActive ?? false)) {
+      return;
+    }
     _detailTimer?.cancel();
+    _scheduledKey = key;
     final gen = ++_detailGen;
-    _detailTimer = Timer(const Duration(seconds: 1), () {
+    _detailTimer = Timer(delay, () {
       _loadDetail(gen, key);
     });
   }
@@ -385,7 +401,12 @@ class ClipwordController extends ChangeNotifier {
     }
     final days = buckets.keys.toList()..sort((a, b) => b.compareTo(a));
     for (final day in days) {
-      result.add(PaletteEntry.section('day-${day.millisecondsSinceEpoch}', _dayTitle(day)));
+      result.add(
+        PaletteEntry.section(
+          'day-${day.millisecondsSinceEpoch}',
+          _dayTitle(day),
+        ),
+      );
       for (final item in buckets[day]!) {
         result.add(PaletteEntry.history(item));
       }
@@ -416,7 +437,9 @@ class ClipwordController extends ChangeNotifier {
       return result;
     }
     for (final folder in snapshot.folders) {
-      final folderItems = items.where((item) => item.folderId == folder.id).toList();
+      final folderItems = items
+          .where((item) => item.folderId == folder.id)
+          .toList();
       final collapsed = snapshot.collapsedFolderIDs.contains(folder.id);
       result.add(PaletteEntry.folder(folder, folderItems.length, collapsed));
       if (!collapsed) {
@@ -439,8 +462,12 @@ class ClipwordController extends ChangeNotifier {
     return result;
   }
 
-  List<PaletteEntry> get selectable =>
-      entries.where((e) => e.kind == 'history' || e.kind == 'bookmark' || e.kind == 'folder').toList();
+  List<PaletteEntry> get selectable => entries
+      .where(
+        (e) =>
+            e.kind == 'history' || e.kind == 'bookmark' || e.kind == 'folder',
+      )
+      .toList();
 
   /// Returns the index in [entries] of the newly selected row, or -1.
   int move(int delta) {
@@ -464,10 +491,15 @@ class ClipwordController extends ChangeNotifier {
     if (delta > 0 && index >= rows.length - 12) {
       loadMore();
     }
-    return entries.indexWhere((entry) => entry.kind == row.kind && entry.id == row.id);
+    return entries.indexWhere(
+      (entry) => entry.kind == row.kind && entry.id == row.id,
+    );
   }
 
-  Future<void> activatePrimary({bool secondary = false, bool shift = false}) async {
+  Future<void> activatePrimary({
+    bool secondary = false,
+    bool shift = false,
+  }) async {
     final selection = this.selection;
     if (selection == null) return;
     if (selection.kind == 'folder') {
@@ -536,7 +568,9 @@ class ClipwordController extends ChangeNotifier {
     _localSelection = Selection(kind, id);
     listFocused = true;
     channel.select(kind, id);
-    _scheduleDetail();
+    // Pointer commits the selection — load the preview nearly immediately.
+    // The 1s default only exists to absorb held arrow-key navigation.
+    _scheduleDetail(const Duration(milliseconds: 40));
     notifyListeners();
   }
 
@@ -549,7 +583,9 @@ class ClipwordController extends ChangeNotifier {
   int get selectedIndex {
     final current = selection;
     if (current == null) return -1;
-    return entries.indexWhere((entry) => entry.kind == current.kind && entry.id == current.id);
+    return entries.indexWhere(
+      (entry) => entry.kind == current.kind && entry.id == current.id,
+    );
   }
 
   void refresh() => notifyListeners();
@@ -560,24 +596,65 @@ class ClipwordController extends ChangeNotifier {
     final yesterday = today.subtract(const Duration(days: 1));
     if (day == today) return 'Today';
     if (day == yesterday) return 'Yesterday';
-    const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const weekdays = [
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday',
+    ];
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
     final weekday = weekdays[day.weekday - 1];
     return '$weekday ${months[day.month - 1]} ${day.day}';
   }
 }
 
 class PaletteEntry {
-  PaletteEntry._(this.kind, {this.id, this.title, this.history, this.bookmark, this.count = 0, this.collapsed = false, this.indented = false});
+  PaletteEntry._(
+    this.kind, {
+    this.id,
+    this.title,
+    this.history,
+    this.bookmark,
+    this.count = 0,
+    this.collapsed = false,
+    this.indented = false,
+  });
 
   factory PaletteEntry.section(String id, String title) =>
       PaletteEntry._('section', id: id, title: title);
   factory PaletteEntry.history(HistoryRow item) =>
       PaletteEntry._('history', id: item.id, history: item);
   factory PaletteEntry.bookmark(BookmarkRow item, bool indented) =>
-      PaletteEntry._('bookmark', id: item.id, bookmark: item, indented: indented);
+      PaletteEntry._(
+        'bookmark',
+        id: item.id,
+        bookmark: item,
+        indented: indented,
+      );
   factory PaletteEntry.folder(FolderRow folder, int count, bool collapsed) =>
-      PaletteEntry._('folder', id: folder.id, title: folder.name, count: count, collapsed: collapsed);
+      PaletteEntry._(
+        'folder',
+        id: folder.id,
+        title: folder.name,
+        count: count,
+        collapsed: collapsed,
+      );
   factory PaletteEntry.empty(String id) => PaletteEntry._('empty', id: id);
 
   final String kind;

@@ -16,6 +16,9 @@
 #include <winrt/base.h>
 
 #include <algorithm>
+#include <csignal>
+#include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <string>
 #include <vector>
@@ -248,9 +251,41 @@ std::string WideToUtf8(const std::wstring& s) {
 
 ClipwordHost* ClipwordHost::instance_ = nullptr;
 
+void ClipwordHost::RemoveTrayForExit() {
+  if (instance_) instance_->RemoveTray();
+}
+
+static LONG WINAPI ClipwordCrashFilter(EXCEPTION_POINTERS*) {
+  // The cleanup call itself rides SEH so a fault during it can't recurse.
+  __try {
+    ClipwordHost::RemoveTrayForExit();
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
+  return EXCEPTION_CONTINUE_SEARCH;  // WER/dump still handles the crash
+}
+
+static void ClipwordCrashSignal(int sig) {
+  __try {
+    ClipwordHost::RemoveTrayForExit();
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
+  std::signal(sig, SIG_DFL);
+  raise(sig);  // resume the real crash
+}
+
+void ClipwordHost::InstallExitCleanup() {
+  std::atexit(RemoveTrayForExit);
+  SetUnhandledExceptionFilter(&ClipwordCrashFilter);
+  std::signal(SIGABRT, &ClipwordCrashSignal);
+  std::signal(SIGSEGV, &ClipwordCrashSignal);
+  std::signal(SIGFPE, &ClipwordCrashSignal);
+  std::signal(SIGILL, &ClipwordCrashSignal);
+}
+
 ClipwordHost::ClipwordHost(flutter::BinaryMessenger* messenger, HWND hwnd)
     : hwnd_(hwnd) {
   instance_ = this;
+  InstallExitCleanup();
   const auto* codec = &flutter::StandardMethodCodec::GetInstance();
   channel_ =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
@@ -469,6 +504,7 @@ struct IVirtualDesktopPinnedApps : public IUnknown {
   virtual HRESULT STDMETHODCALLTYPE PinView(IUnknown*) = 0;
   virtual HRESULT STDMETHODCALLTYPE UnpinView(IUnknown*) = 0;
 };
+
 }  // namespace
 
 void ClipwordHost::PinOnAllDesktops(HWND hwnd) {

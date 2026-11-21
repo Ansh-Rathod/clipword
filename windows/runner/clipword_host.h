@@ -40,6 +40,16 @@ class ClipwordHost {
   // WM_CLOSE). Returns true when the message was consumed.
   bool HandleMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
 
+  // ShakePin-style ghost-tray cleanup: Dart's quit() runs removeTray before
+  // exit(0), but a crash or a bare exit() skips both the Dart dispose and
+  // ~ClipwordHost, leaving the icon parked until the user hovers it. This
+  // installs atexit + SetUnhandledExceptionFilter + CRT signal handlers
+  // that all funnel into RemoveTray(); NIM_DELETE is idempotent.
+  // TerminateProcess (taskkill /F, End Task) remains the hard floor — no
+  // in-process code runs there.
+  static void InstallExitCleanup();
+  static void RemoveTrayForExit();
+
  private:
   void HandleMethodCall(
       const flutter::MethodCall<flutter::EncodableValue>& call,
