@@ -11,7 +11,9 @@ class MainFlutterWindow: NSWindow {
         hidesOnDeactivate = false
         orderOut(nil)
 
-        let flutterViewController = FlutterViewController()
+        let flutterEngine = FlutterEngine(name: "clipword", project: nil)
+        flutterEngine.run(withEntrypoint: nil)
+        let flutterViewController = FlutterViewController(engine: flutterEngine, nibName: nil, bundle: nil)
         flutterViewController.backgroundColor = .clear
         flutterViewController.view.wantsLayer = true
         flutterViewController.view.layer?.isOpaque = false

@@ -80,10 +80,13 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     private var pasteStackMonitor: Any?
     private var localHotkeyMonitor: Any?
     private var outsideClickMonitor: Any?
+    private var paletteTypingMonitor: Any?
     private var lastToggleAt = Date.distantPast
     private var pendingMenuAction: (() -> Void)?
     private var iconCache: [String: FlutterStandardTypedData] = [:]
     private var menuKeepAlive: MenuActions?
+    private var searchGeneration = 0
+    private var searchTask: Task<Void, Never>?
 
     func attach(window: NSWindow, messenger: FlutterBinaryMessenger) {
         flutterWindow = window
@@ -100,6 +103,7 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
         installStatusItem()
         configureWindow(window)
         registerHotkey()
+        registerPaletteTypingMonitor()
         NSApp.setActivationPolicy(.accessory)
         hidePalette()
     }
@@ -270,6 +274,67 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
             // The opening keystroke is delivered again once we become key.
             guard Date().timeIntervalSince(self.lastToggleAt) > 0.45 else { return nil }
             self.togglePalette()
+            return nil
+        }
+    }
+
+    /// The nib's MainMenu ships the stock Edit menu whose key equivalents
+    /// (⌘A selectAll:, ⌘X/⌘C/⌘V, ⌘Z, ⌘F…) are consumed by performKeyEquivalent
+    /// before keyDown ever reaches the Flutter view, so the framework never
+    /// sees them. Clear the equivalents on the app's main menu — the palette
+    /// owns those keys via its own shortcuts. Items still work when clicked,
+    /// and programmatic pop-up menus keep their own equivalents.
+    func stripAppMenuKeyEquivalents() {
+        func clear(_ menu: NSMenu) {
+            for item in menu.items {
+                item.keyEquivalent = ""
+                if let submenu = item.submenu { clear(submenu) }
+            }
+        }
+        if let mainMenu = NSApp.mainMenu { clear(mainMenu) }
+    }
+
+    /// Navigation keys that AppKit routes through interpretKeyEvents as
+    /// doCommand: selectors — with an active text input connection they never
+    /// reach Flutter's HardwareKeyboard, so Dart-side navigation is dead
+    /// while the search field is focused. Forwarded as onPaletteNav calls.
+    private static let paletteNavKeys: [UInt16: String] = [
+        125: "down", 126: "up",
+        116: "pageUp", 121: "pageDown",
+        115: "home", 119: "end",
+        36: "enter", 76: "enter",
+        53: "escape",
+    ]
+
+    /// Fallback input path: when the palette window is key but the Flutter
+    /// view is not first responder, framework key dispatch never runs, so
+    /// forward plain typing to Dart ("type anywhere") and consume the event.
+    private func registerPaletteTypingMonitor() {
+        paletteTypingMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self,
+                  let window = self.flutterWindow,
+                  self.windowMode == "palette",
+                  window.isKeyWindow
+            else { return event }
+            let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            if let nav = Self.paletteNavKeys[event.keyCode],
+               flags.isEmpty || (nav == "enter" && flags == [.command]) {
+                self.channel?.invokeMethod("onPaletteNav", arguments: [
+                    "key": nav, "meta": flags.contains(.command),
+                ])
+            }
+            guard let view = window.contentViewController?.view,
+                  window.firstResponder !== view
+            else { return event }
+            if event.keyCode == 51 {
+                self.channel?.invokeMethod("onPaletteInput", arguments: "\u{7f}")
+                return nil
+            }
+            guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+                  let chars = event.characters, !chars.isEmpty,
+                  chars.rangeOfCharacter(from: .controlCharacters) == nil
+            else { return event }
+            self.channel?.invokeMethod("onPaletteInput", arguments: chars)
             return nil
         }
     }
@@ -837,9 +902,8 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
             ])
         case "setSearch":
             store.searchQuery = args["query"] as? String ?? ""
-            store.applyFilters(using: searchService)
-            emitSnapshot()
             result(nil)
+            scheduleSearch()
         case "setCategory":
             let raw = args["category"] as? String
             store.setCategoryFilter(raw.flatMap(ClipboardCategory.init(rawValue:)))
@@ -1359,6 +1423,37 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
 
     // MARK: Snapshot
 
+    /// Coalesced, off-thread text search: keystrokes cancel the pending task,
+    /// the (possibly expensive) matching runs on a detached task over extracted
+    /// Sendable strings, and only the latest generation commits + emits.
+    private func scheduleSearch() {
+        guard let store = historyStore else { return }
+        searchGeneration += 1
+        let gen = searchGeneration
+        searchTask?.cancel()
+        searchTask = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: 40_000_000)
+            guard !Task.isCancelled else { return }
+            guard gen == self.searchGeneration else { return }
+            let base = store.filteredBeforeSearch()
+            let texts = base.map { (plainText: $0.plainText, title: $0.title) }
+            let query = store.searchQuery
+            let mode = Defaults[.searchMode]
+            let indices: [Int]
+            if query.isEmpty {
+                indices = Array(base.indices)
+            } else {
+                indices = await Task.detached {
+                    SearchService.searchIndices(query: query, mode: mode, in: texts)
+                }.value
+            }
+            guard gen == self.searchGeneration else { return }
+            store.commitFilteredItems(indices.map { base[$0] })
+            self.emitSnapshot()
+        }
+    }
+
     func emitSnapshot() {
         pruneSelection()
         let payload: [String: Any] = ["type": "snapshot", "payload": snapshotDict()]
@@ -1429,7 +1524,8 @@ final class ClipwordHost: NSObject, NSWindowDelegate, NSMenuDelegate {
     }
 
     private func emitWindowMode() {
-        events?(["type": "windowMode", "payload": windowMode])
+        guard let events else { return }
+        events(["type": "windowMode", "payload": windowMode])
         channel?.invokeMethod("onWindowMode", arguments: windowMode)
     }
 

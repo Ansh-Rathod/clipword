@@ -14,6 +14,7 @@ class AppDelegate: FlutterAppDelegate {
     override func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         super.applicationDidFinishLaunching(notification)
+        ClipwordHost.shared.stripAppMenuKeyEquivalents()
         mainFlutterWindow?.orderOut(nil)
         ClipwordHost.shared.hidePalette()
     }

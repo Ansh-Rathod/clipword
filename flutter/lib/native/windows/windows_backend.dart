@@ -60,6 +60,8 @@ class WindowsBackend extends ClipwordBackend {
   final _renameFolder = StreamController<Map<Object?, Object?>>.broadcast();
   final _menuTracking = StreamController<bool>.broadcast();
   final _paletteKey = StreamController<void>.broadcast();
+  final _paletteInput = StreamController<String>.broadcast();
+  final _paletteNav = StreamController<Map<Object?, Object?>>.broadcast();
 
   @override
   Stream<ClipSnapshot> get snapshots => _snapshot.stream;
@@ -77,6 +79,10 @@ class WindowsBackend extends ClipwordBackend {
   Stream<bool> get menuTracking => _menuTracking.stream;
   @override
   Stream<void> get paletteKeys => _paletteKey.stream;
+  @override
+  Stream<String> get paletteInputs => _paletteInput.stream;
+  @override
+  Stream<Map<Object?, Object?>> get paletteNavs => _paletteNav.stream;
 
   String _paletteSource = 'history';
   String _settingsSection = 'general';

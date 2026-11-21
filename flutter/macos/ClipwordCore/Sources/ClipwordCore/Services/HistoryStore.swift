@@ -202,7 +202,10 @@ public final class HistoryStore {
         }
     }
 
-    public func applyFilters(using searchService: SearchService? = nil) {
+    /// Sort + category/app/time filters — everything `applyFilters` does except
+    /// the (potentially expensive) text search. Safe to call before offloading
+    /// the search stage.
+    public func filteredBeforeSearch() -> [HistoryItem] {
         var result = sortedDisplayItems()
 
         if let activeCategory {
@@ -217,6 +220,17 @@ public final class HistoryStore {
             result = result.filter { timeFilter.contains($0.lastCopiedAt) }
         }
 
+        return result
+    }
+
+    public func commitFilteredItems(_ items: [HistoryItem]) {
+        filteredItems = items
+        listRevision += 1
+    }
+
+    public func applyFilters(using searchService: SearchService? = nil) {
+        var result = filteredBeforeSearch()
+
         if !searchQuery.isEmpty {
             if let searchService {
                 result = searchService.search(query: searchQuery, in: result)
@@ -228,8 +242,7 @@ public final class HistoryStore {
             }
         }
 
-        filteredItems = result
-        listRevision += 1
+        commitFilteredItems(result)
     }
 
     public func setCategoryFilter(_ category: ClipboardCategory?) {

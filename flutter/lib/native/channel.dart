@@ -33,6 +33,8 @@ class ClipwordChannel {
   Stream<Map<Object?, Object?>> get renameFolders => _backend.renameFolders;
   Stream<bool> get menuTracking => _backend.menuTracking;
   Stream<void> get paletteKeys => _backend.paletteKeys;
+  Stream<String> get paletteInputs => _backend.paletteInputs;
+  Stream<Map<Object?, Object?>> get paletteNavs => _backend.paletteNavs;
 
   Future<ClipSnapshot> snapshot() => _backend.snapshot();
 

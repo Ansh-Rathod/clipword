@@ -56,6 +56,7 @@ class PalettePage extends StatefulWidget {
 
 class _PalettePageState extends State<PalettePage> {
   late final TextEditingController _search;
+  final _undo = UndoHistoryController();
   late final FocusNode _searchFocus;
   late final FocusNode _pageFocus;
   final _listController = ListController();
@@ -66,6 +67,8 @@ class _PalettePageState extends State<PalettePage> {
   String? _overlay;
   bool _restoringScroll = false;
   StreamSubscription<void>? _paletteKey;
+  StreamSubscription<String>? _paletteInput;
+  StreamSubscription<Map<Object?, Object?>>? _paletteNav;
 
   ClipwordController get c => widget.controller;
   ClipPalette get p => widget.palette;
@@ -84,6 +87,11 @@ class _PalettePageState extends State<PalettePage> {
       if (!mounted) return;
       _refocusPalette();
     });
+    _paletteInput = c.channel.paletteInputs.listen(_onPaletteInput);
+    _paletteNav = c.channel.paletteNavs.listen(_onPaletteNav);
+    // Global key handler: routes typing into the search field no matter
+    // which node holds focus, and makes ⌘A/⌘X/⌘V/⌘Z deterministic.
+    HardwareKeyboard.instance.addHandler(_globalKeyEvent);
     _focusSearch();
   }
 
@@ -140,16 +148,203 @@ class _PalettePageState extends State<PalettePage> {
     return KeyEventResult.ignored;
   }
 
+  static final _controlChar = RegExp(r'[\x00-\x1F\x7F]');
+
+  /// Global key handler (runs before focus dispatch, sees every key event
+  /// the framework receives): routes plain typing into the search field
+  /// even when it isn't focused, like Spotlight/Raycast, and applies
+  /// ⌘A/⌘X/⌘V/⌘Z to the query deterministically. Returning true marks the
+  /// event handled on the platform side; focus dispatch still runs, so
+  /// `_onKeyEvent` must not route characters too (double insert).
+  bool _globalKeyEvent(KeyEvent event) {
+    if (!mounted ||
+        c.windowMode != 'palette' ||
+        c.menuTracking ||
+        c.dialogOpen ||
+        c.overlay != null) {
+      return false;
+    }
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return false;
+    final keyboard = HardwareKeyboard.instance;
+    final meta = keyboard.isMetaPressed || keyboard.isControlPressed;
+    final alt = keyboard.isAltPressed;
+    final shift = keyboard.isShiftPressed;
+    final key = event.logicalKey;
+    if (meta && !alt && !shift && key == LogicalKeyboardKey.keyA) {
+      _search.selection =
+          TextSelection(baseOffset: 0, extentOffset: _search.text.length);
+      _focusSearch();
+      return true;
+    }
+    if (meta && !alt && !shift && key == LogicalKeyboardKey.keyC) {
+      final sel = _search.selection;
+      if (_searchFocus.hasFocus && sel.isValid && !sel.isCollapsed) {
+        Clipboard.setData(
+            ClipboardData(text: sel.textInside(_search.text)));
+      } else {
+        c.copySelection();
+      }
+      return true;
+    }
+    if (_searchFocus.hasFocus) return false;
+    if (meta || alt) {
+      if (meta && !alt) {
+        if (!shift && key == LogicalKeyboardKey.keyX) return _cutSearch();
+        if (!shift && key == LogicalKeyboardKey.keyV) {
+          _pasteIntoSearch();
+          return true;
+        }
+        if (key == LogicalKeyboardKey.keyZ) {
+          shift ? _undo.redo() : _undo.undo();
+          return true;
+        }
+      }
+      return false;
+    }
+    final ch = event.character;
+    if (ch != null && ch.isNotEmpty && !ch.contains(_controlChar)) {
+      _insertSearchText(ch);
+      return true;
+    }
+    if (key == LogicalKeyboardKey.backspace && _deleteSearchChar()) {
+      _focusSearch();
+      return true;
+    }
+    return false;
+  }
+
+  /// Native-forwarded keystrokes (sent when the palette window is key but
+  /// the Flutter view isn't first responder, so framework key dispatch is
+  /// bypassed entirely).
+  void _onPaletteInput(String text) {
+    if (!mounted ||
+        c.windowMode != 'palette' ||
+        c.menuTracking ||
+        c.dialogOpen ||
+        c.overlay != null) {
+      return;
+    }
+    if (text == '\u007f') {
+      if (_deleteSearchChar()) _focusSearch();
+      return;
+    }
+    _insertSearchText(text);
+  }
+
+  /// Navigation keys forwarded by the native monitor. When the search field
+  /// has focus, macOS consumes arrows/enter/escape as interpretKeyEvents
+  /// selectors before Flutter sees a key event — this is the only delivery
+  /// path in that state. When it doesn't have focus, real key events reach
+  /// `_onKeyEvent`/`Shortcuts`, so the forward is skipped to avoid handling
+  /// the same keypress twice.
+  void _onPaletteNav(Map<Object?, Object?> nav) {
+    if (!mounted ||
+        c.windowMode != 'palette' ||
+        c.menuTracking ||
+        c.dialogOpen ||
+        c.overlay != null ||
+        !_searchFocus.hasFocus) {
+      return;
+    }
+    switch (nav['key']) {
+      case 'down':
+        _move(1);
+      case 'up':
+        _move(-1);
+      case 'pageDown':
+        _move(8);
+      case 'pageUp':
+        _move(-8);
+      case 'home':
+        _move(-99999);
+      case 'end':
+        _moveToEnd();
+      case 'enter':
+        c.activatePrimary(secondary: nav['meta'] == true);
+      case 'escape':
+        _escape();
+    }
+  }
+
+  void _escape() {
+    if (c.overlay != null) {
+      c.overlay = null;
+      c.refresh();
+      return;
+    }
+    final snap = c.snapshot;
+    if (snap.searchQuery.isNotEmpty) {
+      c.channel.setSearch('');
+    } else if (snap.timeFilter.isActive) {
+      c.channel.setTimeFilter(TimeFilter('any'));
+    } else {
+      c.channel.hideWindow();
+    }
+  }
+
+  bool _cutSearch() {
+    final sel = _search.selection;
+    final text = _search.text;
+    if (!sel.isValid || sel.isCollapsed) return false;
+    Clipboard.setData(ClipboardData(text: sel.textInside(text)));
+    _setSearchValue(text.replaceRange(sel.start, sel.end, ''), sel.start);
+    return true;
+  }
+
+  void _pasteIntoSearch() {
+    Clipboard.getData('text/plain').then((data) {
+      final text = data?.text;
+      if (!mounted || text == null || text.isEmpty) return;
+      _insertSearchText(text);
+    });
+  }
+
+  void _insertSearchText(String input) {
+    final text = _search.text;
+    final sel = _search.selection;
+    final start = sel.isValid ? sel.start : text.length;
+    final end = sel.isValid ? sel.end : text.length;
+    _setSearchValue(
+      text.replaceRange(start, end, input),
+      start + input.length,
+    );
+    _focusSearch();
+  }
+
+  bool _deleteSearchChar() {
+    final text = _search.text;
+    if (text.isEmpty) return false;
+    final sel = _search.selection;
+    final String newText;
+    final int caret;
+    if (sel.isValid && !sel.isCollapsed) {
+      newText = text.replaceRange(sel.start, sel.end, '');
+      caret = sel.start;
+    } else {
+      final pos = sel.isValid ? sel.start : text.length;
+      if (pos <= 0) return false;
+      final before = text.substring(0, pos).characters.skipLast(1).string;
+      newText = before + text.substring(pos);
+      caret = before.length;
+    }
+    _setSearchValue(newText, caret);
+    return true;
+  }
+
+  void _setSearchValue(String text, int caret) {
+    _search.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: caret),
+    );
+    c.channel.setSearch(text);
+  }
+
   bool _handleItemShortcut(LogicalKeyboardKey key) {
     if (c.dialogOpen || c.menuTracking) return false;
     final meta = _modPressed;
     final alt = HardwareKeyboard.instance.isAltPressed;
     final shift = HardwareKeyboard.instance.isShiftPressed;
     if (meta && !alt) {
-      if (key == LogicalKeyboardKey.keyC && !shift) {
-        c.copySelection();
-        return true;
-      }
       if (key == LogicalKeyboardKey.keyE) {
         c.editSelection();
         return true;
@@ -425,8 +620,12 @@ class _PalettePageState extends State<PalettePage> {
   void dispose() {
     _saveScroll();
     c.removeListener(_onController);
+    HardwareKeyboard.instance.removeHandler(_globalKeyEvent);
     _paletteKey?.cancel();
+    _paletteInput?.cancel();
+    _paletteNav?.cancel();
     _search.dispose();
+    _undo.dispose();
     _searchFocus.dispose();
     _pageFocus.dispose();
     _listController.dispose();
@@ -456,7 +655,6 @@ class _PalettePageState extends State<PalettePage> {
           _mod(LogicalKeyboardKey.keyB): const _ToggleSourceIntent(),
           _mod(LogicalKeyboardKey.keyK): const _ActionsIntent(),
           _mod(LogicalKeyboardKey.slash): const _FocusSearchIntent(),
-          _mod(LogicalKeyboardKey.keyC): const _CopyItemIntent(),
           _mod(LogicalKeyboardKey.keyE): const _EditItemIntent(),
           _mod(LogicalKeyboardKey.keyV, shift: true): const _PasteStackIntent(),
           _mod(LogicalKeyboardKey.backspace): const _DeleteItemIntent(),
@@ -490,18 +688,7 @@ class _PalettePageState extends State<PalettePage> {
           _EscapeIntent: CallbackAction<_EscapeIntent>(
             onInvoke: (_) {
               if (c.menuTracking) return null;
-              if (c.overlay != null) {
-                c.overlay = null;
-                c.refresh();
-                return null;
-              }
-              if (snap.searchQuery.isNotEmpty) {
-                c.channel.setSearch('');
-              } else if (snap.timeFilter.isActive) {
-                c.channel.setTimeFilter(TimeFilter('any'));
-              } else {
-                c.channel.hideWindow();
-              }
+              _escape();
               return null;
             },
           ),
@@ -544,13 +731,7 @@ class _PalettePageState extends State<PalettePage> {
               return null;
             },
           ),
-          _CopyItemIntent: CallbackAction<_CopyItemIntent>(
-            onInvoke: (_) {
-              if (c.dialogOpen) return null;
-              c.copySelection();
-              return null;
-            },
-          ),
+
           _EditItemIntent: CallbackAction<_EditItemIntent>(
             onInvoke: (_) {
               if (c.dialogOpen) return null;
@@ -639,9 +820,11 @@ class _PalettePageState extends State<PalettePage> {
             child: EditableText(
               controller: _search,
               focusNode: _searchFocus,
+              undoController: _undo,
               style: TextStyle(fontSize: 17, color: p.label),
               cursorColor: p.accent,
               backgroundCursorColor: p.secondary,
+              selectionColor: p.accent.withValues(alpha: 0.35),
               onChanged: c.channel.setSearch,
             ),
           ),
@@ -1526,6 +1709,7 @@ class _EditSheetState extends State<EditSheet> {
                             ),
                             cursorColor: p.accent,
                             backgroundCursorColor: p.secondary,
+                            selectionColor: p.accent.withValues(alpha: 0.35),
                           ),
                         ),
                         const SizedBox(height: 16),
@@ -1683,6 +1867,7 @@ class _FolderSheetState extends State<FolderSheet> {
                           style: TextStyle(fontSize: 15, color: p.label),
                           cursorColor: p.accent,
                           backgroundCursorColor: p.secondary,
+                          selectionColor: p.accent.withValues(alpha: 0.35),
                         ),
                         const SizedBox(height: 16),
                         _DialogActions(
@@ -1828,9 +2013,6 @@ class _QuitIntent extends Intent {
   const _QuitIntent();
 }
 
-class _CopyItemIntent extends Intent {
-  const _CopyItemIntent();
-}
 
 class _EditItemIntent extends Intent {
   const _EditItemIntent();

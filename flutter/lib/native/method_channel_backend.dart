@@ -23,6 +23,8 @@ class MethodChannelBackend extends ClipwordBackend {
   final _renameFolder = StreamController<Map<Object?, Object?>>.broadcast();
   final _menuTracking = StreamController<bool>.broadcast();
   final _paletteKey = StreamController<void>.broadcast();
+  final _paletteInput = StreamController<String>.broadcast();
+  final _paletteNav = StreamController<Map<Object?, Object?>>.broadcast();
 
   @override
   Stream<ClipSnapshot> get snapshots => _snapshot.stream;
@@ -40,6 +42,10 @@ class MethodChannelBackend extends ClipwordBackend {
   Stream<bool> get menuTracking => _menuTracking.stream;
   @override
   Stream<void> get paletteKeys => _paletteKey.stream;
+  @override
+  Stream<String> get paletteInputs => _paletteInput.stream;
+  @override
+  Stream<Map<Object?, Object?>> get paletteNavs => _paletteNav.stream;
 
   Future<dynamic> _onMethod(MethodCall call) async {
     switch (call.method) {
@@ -60,6 +66,10 @@ class MethodChannelBackend extends ClipwordBackend {
         _menuTracking.add(call.arguments as bool);
       case 'onPaletteKey':
         _paletteKey.add(null);
+      case 'onPaletteInput':
+        if (call.arguments is String) _paletteInput.add(call.arguments as String);
+      case 'onPaletteNav':
+        _paletteNav.add(Map<Object?, Object?>.from(call.arguments as Map));
     }
   }
 

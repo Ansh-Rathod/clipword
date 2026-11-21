@@ -6,26 +6,76 @@ import Observation
 @Observable
 @MainActor
 public final class SearchService {
-    private let fuse = Fuse(threshold: 0.4)
 
     public init() {}
 
     public func search(query: String, in items: [HistoryItem]) -> [HistoryItem] {
         guard !query.isEmpty else { return items }
-        switch Defaults[.searchMode] {
+        let texts = items.map { (plainText: $0.plainText, title: $0.title) }
+        return Self.searchIndices(query: query, mode: Defaults[.searchMode], in: texts)
+            .map { items[$0] }
+    }
+
+    /// Index-based variant that works on extracted (Sendable) (plainText, title)
+    /// pairs and returns indices into the input — safe to call off the main actor.
+    nonisolated public static func searchIndices(
+        query: String,
+        mode: SearchMode,
+        in items: [(plainText: String?, title: String?)]
+    ) -> [Int] {
+        switch mode {
         case .exact:
-            return exactSearch(query: query, in: items)
+            return exactIndices(query: query, in: items)
         case .fuzzy:
-            return fuzzySearch(query: query, in: items)
+            return fuzzyIndices(query: query, in: items)
         case .regex:
-            return regexSearch(query: query, in: items)
+            return regexIndices(query: query, in: items)
         case .mixed:
-            let exact = exactSearch(query: query, in: items)
+            let exact = exactIndices(query: query, in: items)
             if !exact.isEmpty { return exact }
-            let regex = regexSearch(query: query, in: items)
+            let regex = regexIndices(query: query, in: items)
             if !regex.isEmpty { return regex }
-            return fuzzySearch(query: query, in: items)
+            return fuzzyIndices(query: query, in: items)
         }
+    }
+
+    nonisolated private static func exactIndices(
+        query: String,
+        in items: [(plainText: String?, title: String?)]
+    ) -> [Int] {
+        items.indices.filter { i in
+            (items[i].plainText?.localizedCaseInsensitiveContains(query) ?? false)
+                || (items[i].title?.localizedCaseInsensitiveContains(query) ?? false)
+        }
+    }
+
+    nonisolated private static func regexIndices(
+        query: String,
+        in items: [(plainText: String?, title: String?)]
+    ) -> [Int] {
+        guard let regex = try? NSRegularExpression(pattern: query, options: [.caseInsensitive]) else {
+            return []
+        }
+        return items.indices.filter { i in
+            let text = items[i].plainText ?? items[i].title ?? ""
+            return regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+        }
+    }
+
+    nonisolated private static func fuzzyIndices(
+        query: String,
+        in items: [(plainText: String?, title: String?)]
+    ) -> [Int] {
+        let fuse = Fuse(threshold: 0.4)
+        var positions: [Int] = []
+        var texts: [String] = []
+        texts.reserveCapacity(items.count)
+        for (i, item) in items.enumerated() {
+            guard let text = item.plainText ?? item.title else { continue }
+            positions.append(i)
+            texts.append(text)
+        }
+        return fuse.search(query, in: texts).map { positions[$0.index] }
     }
 
     public func searchBookmarks(query: String, in items: [BookmarkItem]) -> [BookmarkItem] {
@@ -33,34 +83,6 @@ public final class SearchService {
         return items.filter {
             ($0.plainText?.localizedCaseInsensitiveContains(query) ?? false)
                 || ($0.title?.localizedCaseInsensitiveContains(query) ?? false)
-        }
-    }
-
-    private func exactSearch(query: String, in items: [HistoryItem]) -> [HistoryItem] {
-        items.filter {
-            ($0.plainText?.localizedCaseInsensitiveContains(query) ?? false)
-                || ($0.title?.localizedCaseInsensitiveContains(query) ?? false)
-        }
-    }
-
-    private func fuzzySearch(query: String, in items: [HistoryItem]) -> [HistoryItem] {
-        let searchable = items.compactMap { item -> (HistoryItem, String)? in
-            guard let text = item.plainText ?? item.title else { return nil }
-            return (item, text)
-        }
-        let results = fuse.search(query, in: searchable.map(\.1))
-        return results.compactMap { result in
-            searchable[result.index].0
-        }
-    }
-
-    private func regexSearch(query: String, in items: [HistoryItem]) -> [HistoryItem] {
-        guard let regex = try? NSRegularExpression(pattern: query, options: [.caseInsensitive]) else {
-            return []
-        }
-        return items.filter { item in
-            let text = item.plainText ?? item.title ?? ""
-            return regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
         }
     }
 }

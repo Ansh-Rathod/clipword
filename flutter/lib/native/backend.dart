@@ -22,6 +22,14 @@ abstract class ClipwordBackend {
   Stream<bool> get menuTracking;
   Stream<void> get paletteKeys;
 
+  /// Text forwarded from the native host when keystrokes bypass the Flutter
+  /// view (palette window is key but the view isn't first responder).
+  Stream<String> get paletteInputs;
+
+  /// Navigation keys forwarded from the native host — macOS consumes them as
+  /// interpretKeyEvents selectors before the framework sees a key event.
+  Stream<Map<Object?, Object?>> get paletteNavs;
+
   Future<ClipSnapshot> snapshot();
 
   Future<HistoryPage> loadItems({required int offset, int limit = 80});
