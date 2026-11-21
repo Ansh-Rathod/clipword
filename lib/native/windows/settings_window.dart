@@ -65,6 +65,11 @@ class WinSettingsWindow {
         title: 'Clipword Settings',
         delegate: _HideOnClose(this),
       );
+      // Follow the user across virtual desktops (see the backend's
+      // desktop-switch hook); also drops it onto the active desktop now.
+      try {
+        await _win.invokeMethod('registerTrackedWindow', {'hwnd': hwnd});
+      } catch (_) {}
       // The engine window is created visible — hide while we restyle.
       ShowWindow(hwnd, SW_HIDE);
       _centerOnCursorScreen();
@@ -74,6 +79,9 @@ class WinSettingsWindow {
       // reveal doesn't show an unpainted window.
       await WidgetsBinding.instance.endOfFrame;
     }
+    // A once-shown window stays glued to its virtual desktop — pull it to
+    // the active one before revealing (no-op while it's already there).
+    await moveToCurrentDesktop(_win, hwnd);
     ShowWindow(hwnd, IsIconic(hwnd) != 0 ? SW_RESTORE : SW_SHOW);
     focusWindow(hwnd);
     // DWM drops composition attrs across hide→show; refresh every reveal.

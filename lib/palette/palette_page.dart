@@ -636,6 +636,10 @@ class _PalettePageState extends State<PalettePage> {
   @override
   Widget build(BuildContext context) {
     final snap = c.snapshot;
+    // Windows: the frameless HWND is already rounded by DWM
+    // (DWMWCP_ROUND) — rounding the panel again produces a visibly
+    // mismatched second curve inside the window's own corner.
+    final radius = _isWindows ? 0.0 : ClipTokens.panelRadius;
     return Shortcuts(
       shortcuts: {
         if (!c.dialogOpen) ...{
@@ -775,10 +779,10 @@ class _PalettePageState extends State<PalettePage> {
           child: DecoratedBox(
             decoration: BoxDecoration(
               color: p.panel,
-              borderRadius: BorderRadius.circular(ClipTokens.panelRadius),
+              borderRadius: BorderRadius.circular(radius),
             ),
             child: ClipRRect(
-              borderRadius: BorderRadius.circular(ClipTokens.panelRadius),
+              borderRadius: BorderRadius.circular(radius),
               child: Column(
                 children: [
                   _searchRow(snap),

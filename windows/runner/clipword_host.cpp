@@ -3,6 +3,8 @@
 #include <dwmapi.h>
 #include <gdiplus.h>
 #include <shellapi.h>
+#include <shobjidl.h>
+#include <servprov.h>
 
 #include "resource.h"
 
@@ -13,6 +15,7 @@
 #include <winrt/Windows.Storage.Streams.h>
 #include <winrt/base.h>
 
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <vector>
@@ -269,10 +272,24 @@ ClipwordHost::ClipwordHost(flutter::BinaryMessenger* messenger, HWND hwnd)
   ApplyDarkMenus();
   menu_hook_ = SetWindowsHookExW(WH_CBT, &ClipwordHost::MenuHookProc, nullptr,
                                GetCurrentThreadId());
+
+  // Out-of-context WinEvent hook — desktop-switch notification lands on this
+  // thread's message queue.
+  desktop_hook_ = SetWinEventHook(
+      EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_DESKTOPSWITCH, nullptr,
+      &ClipwordHost::DesktopSwitchProc, 0, 0, WINEVENT_OUTOFCONTEXT);
+  if (!desktop_hook_) {
+    fprintf(stderr, "clipword: desktop-switch hook install FAILED (err=%lu)\n",
+            GetLastError());
+  }
 }
 
 ClipwordHost::~ClipwordHost() {
   RemoveTray();
+  if (desktop_hook_) {
+    UnhookWinEvent(desktop_hook_);
+    desktop_hook_ = nullptr;
+  }
   if (menu_hook_) {
     UnhookWindowsHookEx(menu_hook_);
     menu_hook_ = nullptr;
@@ -414,6 +431,145 @@ void ClipwordHost::InstallTray(const std::wstring& icon_path,
 void ClipwordHost::SetBackdrop(const std::string& mode) {
   backdrop_mode_ = NormalizeBackdropMode(mode);
   ApplyBackdrop(hwnd_, backdrop_mode_);
+}
+
+// ---- virtual-desktop pinning ----
+// No documented API pins a window to all desktops — these shell-internal
+// interfaces are undocumented, but their IIDs and vtables have been
+// identical from Windows 10 through 11 24H2 (cross-checked: MScholtes/
+// VirtualDesktop per-version sources, Ciantic/VirtualDesktopAccessor).
+// Only IVirtualDesktopManagerInternal shifts per build — unused here.
+namespace {
+constexpr GUID kImmersiveShellClsid = {
+    0xc2f03a33, 0x21f5, 0x47fa,
+    {0xb4, 0xbb, 0x15, 0x63, 0x62, 0xa2, 0xf2, 0x39}};
+constexpr GUID kAppViewCollectionIid = {
+    0x1841c6d7, 0x4f9d, 0x42c0,
+    {0xaf, 0x41, 0x87, 0x47, 0x53, 0x8f, 0x10, 0xe5}};
+constexpr GUID kPinnedAppsService = {
+    0xb5a399e7, 0x1c87, 0x46b8,
+    {0x88, 0xe9, 0xfc, 0x57, 0x47, 0xb1, 0x71, 0xbd}};
+constexpr GUID kPinnedAppsIid = {
+    0x4ce81583, 0x1e4c, 0x4632,
+    {0xa6, 0x21, 0x07, 0xa5, 0x35, 0x43, 0x14, 0x8f}};
+
+struct IAppViewCollection : public IUnknown {
+  virtual HRESULT STDMETHODCALLTYPE GetViews(void**) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetViewsByZOrder(void**) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetViewsByAppUserModelId(PCWSTR,
+                                                             void**) = 0;
+  virtual HRESULT STDMETHODCALLTYPE GetViewForHwnd(HWND, IUnknown**) = 0;
+};
+
+struct IVirtualDesktopPinnedApps : public IUnknown {
+  virtual HRESULT STDMETHODCALLTYPE IsAppIdPinned(PCWSTR, BOOL*) = 0;
+  virtual HRESULT STDMETHODCALLTYPE PinAppID(PCWSTR) = 0;
+  virtual HRESULT STDMETHODCALLTYPE UnpinAppID(PCWSTR) = 0;
+  virtual HRESULT STDMETHODCALLTYPE IsViewPinned(IUnknown*, BOOL*) = 0;
+  virtual HRESULT STDMETHODCALLTYPE PinView(IUnknown*) = 0;
+  virtual HRESULT STDMETHODCALLTYPE UnpinView(IUnknown*) = 0;
+};
+}  // namespace
+
+void ClipwordHost::PinOnAllDesktops(HWND hwnd) {
+  if (!hwnd || !IsWindow(hwnd)) return;
+  // The pin persists for the window's lifetime — once set, skip the COM
+  // chain on every show/switch/timer retry.
+  if (std::find(pinned_windows_.begin(), pinned_windows_.end(), hwnd) !=
+      pinned_windows_.end()) {
+    return;
+  }
+  const HRESULT init_hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  IServiceProvider* shell = nullptr;
+  if (SUCCEEDED(CoCreateInstance(kImmersiveShellClsid, nullptr, CLSCTX_ALL,
+                                 IID_IServiceProvider,
+                                 reinterpret_cast<void**>(&shell))) &&
+      shell) {
+    IAppViewCollection* views = nullptr;
+    shell->QueryService(kAppViewCollectionIid, kAppViewCollectionIid,
+                        reinterpret_cast<void**>(&views));
+    IVirtualDesktopPinnedApps* pinned = nullptr;
+    shell->QueryService(kPinnedAppsService, kPinnedAppsIid,
+                        reinterpret_cast<void**>(&pinned));
+    IUnknown* view = nullptr;
+    if (views) views->GetViewForHwnd(hwnd, &view);
+    if (view && pinned) {
+      BOOL is_pinned = FALSE;
+      const bool known = SUCCEEDED(pinned->IsViewPinned(view, &is_pinned));
+      if ((known && is_pinned) || SUCCEEDED(pinned->PinView(view))) {
+        // Cache only on confirmed/successful state — a failed PinView
+        // leaves it uncached so later calls retry.
+        pinned_windows_.push_back(hwnd);
+      }
+    }
+    if (view) view->Release();
+    if (views) views->Release();
+    if (pinned) pinned->Release();
+    shell->Release();
+  }
+  if (SUCCEEDED(init_hr)) CoUninitialize();
+}
+
+void ClipwordHost::MoveToCurrentDesktop(HWND hwnd) {
+  if (!hwnd || !IsWindow(hwnd)) return;
+  const HRESULT init_hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  // MoveWindowToDesktop needs the *target* desktop's GUID, but the manager
+  // only reports the desktop a window is already on — so a throwaway probe
+  // (new windows always land on the active desktop) supplies it.
+  IVirtualDesktopManager* vdm = nullptr;
+  if (SUCCEEDED(CoCreateInstance(CLSID_VirtualDesktopManager, nullptr,
+                               CLSCTX_ALL, IID_PPV_ARGS(&vdm))) &&
+      vdm) {
+    // The all-desktops pin is the primary mechanism; the per-desktop move
+    // below is only a fallback for shells where it fails. Owner is skipped
+    // — it never gets a shell view to pin.
+    PinOnAllDesktops(hwnd);
+    // Owned windows are pulled onto their owner's desktop — the invisible
+    // Static owner travels with the palette or drags it right back.
+    const HWND targets[] = {GetWindow(hwnd, GW_OWNER), hwnd};
+    for (HWND target : targets) {
+      if (!target || !IsWindow(target)) continue;
+      BOOL on_current = TRUE;
+      if (SUCCEEDED(vdm->IsWindowOnCurrentVirtualDesktop(target,
+                                                         &on_current)) &&
+          !on_current) {
+        HWND probe = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"Static", L"", WS_POPUP, 0,
+            0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        GUID desktop{};
+        if (probe && SUCCEEDED(vdm->GetWindowDesktopId(probe, &desktop))) {
+          vdm->MoveWindowToDesktop(target, desktop);
+        }
+        if (probe) DestroyWindow(probe);
+      }
+    }
+    vdm->Release();
+  }
+  if (SUCCEEDED(init_hr)) CoUninitialize();
+}
+
+void ClipwordHost::TrackWindow(HWND hwnd) {
+  if (!hwnd || !IsWindow(hwnd)) return;
+  PinOnAllDesktops(hwnd);
+  if (std::find(tracked_windows_.begin(), tracked_windows_.end(), hwnd) ==
+      tracked_windows_.end()) {
+    tracked_windows_.push_back(hwnd);
+  }
+}
+
+void CALLBACK ClipwordHost::DesktopSwitchProc(HWINEVENTHOOK, DWORD event,
+                                              HWND, LONG, LONG, DWORD,
+                                              DWORD) {
+  if (event == EVENT_SYSTEM_DESKTOPSWITCH && instance_) {
+    instance_->OnDesktopSwitch();
+  }
+}
+
+void ClipwordHost::OnDesktopSwitch() {
+  MoveToCurrentDesktop(hwnd_);
+  for (HWND h : tracked_windows_) {
+    if (IsWindow(h)) MoveToCurrentDesktop(h);
+  }
 }
 
 void ClipwordHost::ApplyBackdrop(HWND hwnd, const std::string& mode_in) {
@@ -610,6 +766,45 @@ void ClipwordHost::HandleMethodCall(
     }
     backdrop_mode_ = NormalizeBackdropMode(mode);
     ApplyBackdrop(target, backdrop_mode_);
+    result->Success();
+    return;
+  }
+
+  if (name == "moveToCurrentDesktop") {
+    HWND target = hwnd_;
+    if (const auto* args =
+            std::get_if<flutter::EncodableMap>(call.arguments())) {
+      auto h = args->find(flutter::EncodableValue("hwnd"));
+      if (h != args->end()) {
+        if (const auto* hw64 = std::get_if<int64_t>(&h->second)) {
+          target = reinterpret_cast<HWND>(static_cast<intptr_t>(*hw64));
+        } else if (const auto* hw32 = std::get_if<int32_t>(&h->second)) {
+          target = reinterpret_cast<HWND>(static_cast<intptr_t>(*hw32));
+        }
+      }
+    }
+    MoveToCurrentDesktop(target);
+    result->Success();
+    return;
+  }
+
+  if (name == "registerTrackedWindow") {
+    if (const auto* args =
+            std::get_if<flutter::EncodableMap>(call.arguments())) {
+      auto h = args->find(flutter::EncodableValue("hwnd"));
+      if (h != args->end()) {
+        HWND target = nullptr;
+        if (const auto* hw64 = std::get_if<int64_t>(&h->second)) {
+          target = reinterpret_cast<HWND>(static_cast<intptr_t>(*hw64));
+        } else if (const auto* hw32 = std::get_if<int32_t>(&h->second)) {
+          target = reinterpret_cast<HWND>(static_cast<intptr_t>(*hw32));
+        }
+        if (target) {
+          TrackWindow(target);
+          MoveToCurrentDesktop(target);
+        }
+      }
+    }
     result->Success();
     return;
   }

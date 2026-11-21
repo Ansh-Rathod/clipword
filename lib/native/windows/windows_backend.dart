@@ -138,6 +138,7 @@ class WindowsBackend extends ClipwordBackend {
 
   final _symbolCache = <String, Uint8List?>{};
   bool _ready = false;
+  Timer? _desktopTracker;
 
   // ---------------- init ----------------
 
@@ -155,6 +156,7 @@ class WindowsBackend extends ClipwordBackend {
       onHide: emitSnapshot,
       onFocusLost: _onFocusLost,
       onModeChanged: _emitWindowMode,
+      channel: _win,
     );
     await _windowing.init();
 
@@ -163,6 +165,26 @@ class WindowsBackend extends ClipwordBackend {
     _settings
       ..onCreated = emitSnapshot
       ..onHidden = emitSnapshot;
+
+    // Presence on all virtual desktops: the native layer pins each window's
+    // shell view via the shell pinning service (registerTrackedWindow below
+    // / in settings_window.dart) — the same flag Task View's "Show this
+    // window on all desktops" sets, instant and version-stable since
+    // Windows 10. The EVENT_SYSTEM_DESKTOPSWITCH hook + this timer remain
+    // as fallback for shells where the pin call fails. Equivalent of the
+    // macOS host's canJoinAllSpaces/stationary collectionBehavior.
+    _win
+        .invokeMethod('registerTrackedWindow', {'hwnd': _windowing.hwnd})
+        .catchError((_) => null);
+    _desktopTracker =
+        Timer.periodic(const Duration(milliseconds: 300), (_) {
+      if (_windowing.windowMode == 'palette') {
+        moveToCurrentDesktop(_win, _windowing.hwnd);
+      }
+      if (_settings.isVisible) {
+        moveToCurrentDesktop(_win, _settings.hwnd);
+      }
+    });
 
     _applyBackdrop();
 
@@ -969,6 +991,7 @@ class WindowsBackend extends ClipwordBackend {
       WinClipboard.empty();
     }
     Prefs.saveNow();
+    _desktopTracker?.cancel();
     store.dispose();
     _settings.dispose();
     try {

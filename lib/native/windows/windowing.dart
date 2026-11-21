@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:ffi' hide Size;
-import 'dart:ui';
 
 import 'package:ffi/ffi.dart';
+import 'package:flutter/services.dart';
 import 'package:win32/win32.dart';
 
 import 'prefs.dart';
@@ -45,6 +45,17 @@ void focusWindow(int hwnd) {
   AttachThreadInput(currentThread, targetThread, FALSE);
 }
 
+/// Pulls [hwnd] onto the active virtual desktop via the `clipword_win`
+/// channel — owned windows stay glued to the desktop they were created on,
+/// so a window summoned from another desktop has to be moved over or
+/// ShowWindow reveals it where the user can't see.
+Future<void> moveToCurrentDesktop(MethodChannel? channel, int hwnd) async {
+  if (channel == null || hwnd == 0) return;
+  try {
+    await channel.invokeMethod('moveToCurrentDesktop', {'hwnd': hwnd});
+  } catch (_) {}
+}
+
 /// Palette window management — the runner HWND stays frameless/topmost and
 /// hidden from taskbar/Alt+Tab. Settings lives in a separate engine window
 /// (`settings_window.dart`) since the official multi-window migration.
@@ -53,6 +64,7 @@ class WinWindowing {
     required this.onHide,
     required this.onFocusLost,
     required this.onModeChanged,
+    this.channel,
   });
 
   static const paletteSize = Size(720, 520);
@@ -60,6 +72,7 @@ class WinWindowing {
   final void Function() onHide;
   final void Function() onFocusLost;
   final void Function(String mode) onModeChanged;
+  final MethodChannel? channel;
 
   String windowMode = 'hidden';
   String source = 'history';
@@ -137,6 +150,7 @@ class WinWindowing {
     windowMode = 'palette';
     onModeChanged(windowMode);
     if (wasHidden) _positionForPref();
+    await moveToCurrentDesktop(channel, hwnd);
     _show();
     if (activate) _focus();
   }
@@ -188,21 +202,6 @@ class WinWindowing {
     }
   }
 
-  /// Primary work area (taskbar side — used for 'menuBar'/tray positioning).
-  static Rect _primaryWorkArea() {
-    final rect = calloc<RECT>();
-    try {
-      if (SystemParametersInfo(SPI_GETWORKAREA, 0, rect, 0) == 0) {
-        return const Rect.fromLTWH(0, 0, 1920, 1040);
-      }
-      final r = rect.ref;
-      return Rect.fromLTWH(r.left.toDouble(), r.top.toDouble(),
-          (r.right - r.left).toDouble(), (r.bottom - r.top).toDouble());
-    } finally {
-      calloc.free(rect);
-    }
-  }
-
   void _centerOnCursorScreen() {
     final wa = cursorWorkArea();
     final size = _size();
@@ -230,9 +229,10 @@ class WinWindowing {
   }
 
   void _nearTray() {
-    // Notification area sits at the taskbar edge — bottom-right of the
-    // primary work area for the default bottom taskbar.
-    final wa = _primaryWorkArea();
+    // Anchor to the taskbar corner of the cursor's display — multi-monitor
+    // users expect the palette on the screen they're working on, not back
+    // on primary.
+    final wa = cursorWorkArea();
     final size = _size();
     _setPosition(Offset(
       wa.left + wa.width - size.width - 8,
@@ -243,8 +243,27 @@ class WinWindowing {
   bool _restoreSavedFrame() {
     final frame = Prefs.popupLastFrame();
     if (frame == null) return false;
-    _setPosition(Offset(frame.x, frame.y));
+    final pos = Offset(frame.x, frame.y);
+    // A frame saved on a since-disconnected monitor would restore
+    // off-screen — fall back to the cursor's display instead.
+    if (!_frameOnMonitor(pos)) return false;
+    _setPosition(pos);
     return true;
+  }
+
+  /// Whether the window rect at [pos] still lands on a connected monitor.
+  bool _frameOnMonitor(Offset pos) {
+    final rect = calloc<RECT>();
+    try {
+      final size = _size();
+      rect.ref.left = pos.dx.round();
+      rect.ref.top = pos.dy.round();
+      rect.ref.right = pos.dx.round() + size.width.round();
+      rect.ref.bottom = pos.dy.round() + size.height.round();
+      return MonitorFromRect(rect, MONITOR_DEFAULTTONULL) != 0;
+    } finally {
+      calloc.free(rect);
+    }
   }
 
   void _saveFrame() {
