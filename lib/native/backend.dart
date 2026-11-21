@@ -100,7 +100,13 @@ abstract class ClipwordBackend {
 
   Future<void> setSettingsSection(String section);
 
+  Future<void> setOpenShortcut(Map<String, Object?> recording);
+
+  Future<void> pauseOpenShortcut(bool paused);
+
   Future<void> recordOpenShortcut();
+
+  Future<void> cancelOpenShortcutRecording();
 
   void listenNativeEvents();
 }

@@ -60,6 +60,7 @@ class ClipwordHost {
   HHOOK hook_ = nullptr;
   HHOOK menu_hook_ = nullptr;
   bool stack_armed_ = false;
+  bool open_shortcut_paused_ = false;
   bool tray_installed_ = false;
   std::string backdrop_mode_ = "mica";
 

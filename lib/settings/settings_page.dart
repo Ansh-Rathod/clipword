@@ -2,9 +2,11 @@ import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart' show Icons;
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import '../app/controller.dart';
+import '../native/channel.dart';
 import '../native/models.dart';
 import '../palette/widgets.dart';
 import '../theme/tokens.dart';
@@ -385,7 +387,7 @@ class _PushButtonState extends State<_PushButton> {
                 fontSize: 13,
                 color: widget.destructive
                     ? widget.palette.destructive
-                    : widget.palette.label,
+                    : widget.palette.controlLabel,
               ),
             ),
           ),
@@ -414,39 +416,214 @@ class _ShortcutKeys extends StatelessWidget {
   }
 }
 
-class _HotkeyKeys extends StatefulWidget {
-  const _HotkeyKeys({
+class _ShortcutRecorderField extends StatefulWidget {
+  const _ShortcutRecorderField({
     required this.keys,
     required this.palette,
-    required this.onTap,
+    required this.channel,
   });
   final List<String> keys;
   final ClipPalette palette;
-  final VoidCallback onTap;
+  final ClipwordChannel channel;
 
   @override
-  State<_HotkeyKeys> createState() => _HotkeyKeysState();
+  State<_ShortcutRecorderField> createState() => _ShortcutRecorderFieldState();
 }
 
-class _HotkeyKeysState extends State<_HotkeyKeys> {
+class _ShortcutRecorderFieldState extends State<_ShortcutRecorderField> {
+  final _focus = FocusNode(skipTraversal: true);
   bool hovered = false;
+  bool recording = false;
+  bool listening = false;
+
+  static final _named = <LogicalKeyboardKey, String>{
+    LogicalKeyboardKey.space: 'space',
+    LogicalKeyboardKey.tab: 'tab',
+    LogicalKeyboardKey.enter: 'enter',
+    LogicalKeyboardKey.comma: 'comma',
+    LogicalKeyboardKey.period: 'period',
+    LogicalKeyboardKey.semicolon: 'semicolon',
+    LogicalKeyboardKey.quote: 'quote',
+    LogicalKeyboardKey.slash: 'slash',
+    LogicalKeyboardKey.backslash: 'backslash',
+    LogicalKeyboardKey.minus: 'minus',
+    LogicalKeyboardKey.equal: 'equal',
+    LogicalKeyboardKey.bracketLeft: 'bracketLeft',
+    LogicalKeyboardKey.bracketRight: 'bracketRight',
+    LogicalKeyboardKey.backquote: 'backquote',
+    LogicalKeyboardKey.insert: 'insert',
+    LogicalKeyboardKey.delete: 'delete',
+    LogicalKeyboardKey.home: 'home',
+    LogicalKeyboardKey.end: 'end',
+    LogicalKeyboardKey.pageUp: 'pageUp',
+    LogicalKeyboardKey.pageDown: 'pageDown',
+    LogicalKeyboardKey.arrowUp: 'up',
+    LogicalKeyboardKey.arrowDown: 'down',
+    LogicalKeyboardKey.arrowLeft: 'left',
+    LogicalKeyboardKey.arrowRight: 'right',
+    LogicalKeyboardKey.keyA: 'a',
+    LogicalKeyboardKey.keyB: 'b',
+    LogicalKeyboardKey.keyC: 'c',
+    LogicalKeyboardKey.keyD: 'd',
+    LogicalKeyboardKey.keyE: 'e',
+    LogicalKeyboardKey.keyF: 'f',
+    LogicalKeyboardKey.keyG: 'g',
+    LogicalKeyboardKey.keyH: 'h',
+    LogicalKeyboardKey.keyI: 'i',
+    LogicalKeyboardKey.keyJ: 'j',
+    LogicalKeyboardKey.keyK: 'k',
+    LogicalKeyboardKey.keyL: 'l',
+    LogicalKeyboardKey.keyM: 'm',
+    LogicalKeyboardKey.keyN: 'n',
+    LogicalKeyboardKey.keyO: 'o',
+    LogicalKeyboardKey.keyP: 'p',
+    LogicalKeyboardKey.keyQ: 'q',
+    LogicalKeyboardKey.keyR: 'r',
+    LogicalKeyboardKey.keyS: 's',
+    LogicalKeyboardKey.keyT: 't',
+    LogicalKeyboardKey.keyU: 'u',
+    LogicalKeyboardKey.keyV: 'v',
+    LogicalKeyboardKey.keyW: 'w',
+    LogicalKeyboardKey.keyX: 'x',
+    LogicalKeyboardKey.keyY: 'y',
+    LogicalKeyboardKey.keyZ: 'z',
+    LogicalKeyboardKey.digit0: '0',
+    LogicalKeyboardKey.digit1: '1',
+    LogicalKeyboardKey.digit2: '2',
+    LogicalKeyboardKey.digit3: '3',
+    LogicalKeyboardKey.digit4: '4',
+    LogicalKeyboardKey.digit5: '5',
+    LogicalKeyboardKey.digit6: '6',
+    LogicalKeyboardKey.digit7: '7',
+    LogicalKeyboardKey.digit8: '8',
+    LogicalKeyboardKey.digit9: '9',
+  };
+
+  static bool _isModifier(LogicalKeyboardKey key) =>
+      key == LogicalKeyboardKey.control ||
+      key == LogicalKeyboardKey.controlLeft ||
+      key == LogicalKeyboardKey.controlRight ||
+      key == LogicalKeyboardKey.shift ||
+      key == LogicalKeyboardKey.shiftLeft ||
+      key == LogicalKeyboardKey.shiftRight ||
+      key == LogicalKeyboardKey.alt ||
+      key == LogicalKeyboardKey.altLeft ||
+      key == LogicalKeyboardKey.altRight ||
+      key == LogicalKeyboardKey.meta ||
+      key == LogicalKeyboardKey.metaLeft ||
+      key == LogicalKeyboardKey.metaRight;
+
+  @override
+  void initState() {
+    super.initState();
+    _focus.addListener(_onFocus);
+  }
+
+  @override
+  void dispose() {
+    _focus.removeListener(_onFocus);
+    HardwareKeyboard.instance.removeHandler(_onHardwareKey);
+    if (recording) {
+      widget.channel.cancelOpenShortcutRecording();
+    }
+    _focus.dispose();
+    super.dispose();
+  }
+
+  Future<void> _start() async {
+    if (recording) return;
+    setState(() => recording = true);
+    if (_isWin) {
+      _focus.requestFocus();
+      return;
+    }
+    try {
+      await widget.channel.recordOpenShortcut();
+    } finally {
+      if (mounted) setState(() => recording = false);
+    }
+  }
+
+  void _onFocus() {
+    if (!_isWin) return;
+    final focused = _focus.hasFocus;
+    if (focused && !listening) {
+      HardwareKeyboard.instance.addHandler(_onHardwareKey);
+      listening = true;
+      widget.channel.pauseOpenShortcut(true);
+    } else if (!focused && listening) {
+      HardwareKeyboard.instance.removeHandler(_onHardwareKey);
+      listening = false;
+      widget.channel.pauseOpenShortcut(false);
+      if (recording) setState(() => recording = false);
+    }
+  }
+
+  bool _onHardwareKey(KeyEvent event) {
+    if (event is! KeyDownEvent) return true;
+    final key = event.logicalKey;
+    if (_isModifier(key)) return true;
+    if (key == LogicalKeyboardKey.escape) {
+      _focus.unfocus();
+      return true;
+    }
+    final hw = HardwareKeyboard.instance;
+    final mods = <String>[
+      if (hw.isControlPressed) 'ctrl',
+      if (hw.isShiftPressed) 'shift',
+      if (hw.isAltPressed) 'alt',
+      if (hw.isMetaPressed) 'meta',
+    ];
+    if (mods.isEmpty || mods.every((m) => m == 'shift')) return true;
+    final label = key.keyLabel.toLowerCase();
+    final name = _named[key] ??
+        ((label.length == 1 && RegExp(r'[a-z0-9]').hasMatch(label))
+            ? label
+            : null);
+    if (name == null) return true;
+    widget.channel.setOpenShortcut({'key': name, 'modifiers': mods});
+    _focus.unfocus();
+    return true;
+  }
 
   @override
   Widget build(BuildContext context) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => hovered = true),
-      onExit: (_) => setState(() => hovered = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: hovered ? widget.palette.hover : const Color(0x00000000),
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-            child: _ShortcutKeys(widget.keys, palette: widget.palette),
+    final p = widget.palette;
+    return Focus(
+      focusNode: _focus,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => hovered = true),
+        onExit: (_) => setState(() => hovered = false),
+        child: GestureDetector(
+          onTap: _start,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: recording
+                  ? p.control
+                  : hovered
+                      ? p.hover
+                      : p.chipFill,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                color: recording ? p.accent.withValues(alpha: 0.7) : p.divider,
+              ),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minWidth: 120, minHeight: 18),
+                child: recording
+                    ? Text(
+                        'Press shortcut',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 12, color: p.secondary),
+                      )
+                    : Center(
+                        child: _ShortcutKeys(widget.keys, palette: p),
+                      ),
+              ),
+            ),
           ),
         ),
       ),
@@ -566,12 +743,12 @@ class GeneralPane extends StatelessWidget {
           children: [
             _PrefRow(
               label: 'Open Clipword',
-              caption: 'Click the keys to record a new shortcut',
+              caption: 'Click the field and press a new shortcut',
               palette: palette,
-              child: _HotkeyKeys(
+              child: _ShortcutRecorderField(
                 keys: controller.snapshot.openShortcut,
                 palette: palette,
-                onTap: controller.channel.recordOpenShortcut,
+                channel: controller.channel,
               ),
             ),
             _PrefRow(
@@ -1262,8 +1439,8 @@ class _MenuValueState extends State<_MenuValue> {
         child: DecoratedBox(
           decoration: BoxDecoration(
             color: hovered
-                ? widget.palette.selectedIdle
-                : widget.palette.control,
+                ? widget.palette.control
+                : widget.palette.chipFill,
             borderRadius: BorderRadius.circular(6),
           ),
           child: Padding(
@@ -1273,7 +1450,7 @@ class _MenuValueState extends State<_MenuValue> {
               children: [
                 Text(
                   widget.value,
-                  style: TextStyle(fontSize: 13, color: widget.palette.label),
+                  style: TextStyle(fontSize: 13, color: widget.palette.controlLabel),
                 ),
                 const SizedBox(width: 6),
                 Icon(

@@ -303,7 +303,7 @@ LRESULT CALLBACK ClipwordHost::KeyboardProc(int code, WPARAM wparam,
 
     // Global open-hotkey combo (default Ctrl+Alt+Shift+V). Injected keys
     // count here — the loop-prevention guard only matters for Ctrl+V pop.
-    if (k->vkCode == self->open_vk_) {
+    if (!self->open_shortcut_paused_ && k->vkCode == self->open_vk_) {
       const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
       const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
       const bool win = ((GetKeyState(VK_LWIN) & 0x8000) != 0) ||
@@ -472,6 +472,21 @@ void ClipwordHost::HandleMethodCall(
       if (it != args->end()) {
         if (const auto* v = std::get_if<bool>(&it->second)) {
           stack_armed_ = *v;
+        }
+      }
+    }
+    result->Success();
+    return;
+  }
+
+  if (name == "pauseOpenShortcut") {
+    const auto* args =
+        std::get_if<flutter::EncodableMap>(call.arguments());
+    if (args) {
+      auto it = args->find(flutter::EncodableValue("paused"));
+      if (it != args->end()) {
+        if (const auto* v = std::get_if<bool>(&it->second)) {
+          open_shortcut_paused_ = *v;
         }
       }
     }
