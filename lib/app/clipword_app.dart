@@ -37,38 +37,50 @@ class ClipwordApp extends StatelessWidget {
         );
       },
       builder: (context, _) {
-        return ListenableBuilder(
-          listenable: controller,
-          builder: (context, _) {
-            final dark =
-                MediaQuery.platformBrightnessOf(context) == Brightness.dark;
-            final palette = ClipPalette(
-              dark: dark,
-              systemAccent: controller.snapshot.accentColor,
-              systemAccentFill: controller.snapshot.accentFill,
-              systemAccentForeground: controller.snapshot.accentForeground,
-            );
-            // Windows runs settings in a dedicated engine window
-            // (settings_window.dart); the palette view mounts a `Window`
-            // subtree once the backend creates its controller. On macOS the
-            // `settingsWindow` flag selects content for the second engine.
-            final settingsCtrl = _isWindows && !settingsWindow
-                ? controller.settingsController
-                : null;
-            final page = settingsWindow
-                ? SettingsPage(controller: controller, palette: palette)
-                : PalettePage(controller: controller, palette: palette);
-            return ColoredBox(
-              color: const Color(0x00000000),
-              // WidgetsApp only builds a Navigator/Overlay when routing
-              // params are given; a bare `builder` tree has none, and
-              // EditableText asserts on `debugCheckHasOverlay` the moment a
-              // tap tries to create its selection overlay. Insert one —
-              // both palette and settings views run through this builder.
-              child: Overlay(
-                initialEntries: <OverlayEntry>[
-                  OverlayEntry(
-                    builder: (context) {
+        // WidgetsApp only builds a Navigator/Overlay when routing
+        // params are given; a bare `builder` tree has none, and
+        // EditableText asserts on `debugCheckHasOverlay` the moment a
+        // tap tries to create its selection overlay. Insert one —
+        // both palette and settings views run through this builder.
+        // The ListenableBuilder must live INSIDE the entry: Overlay's
+        // initialEntries are only consumed at mount, so an entry above the
+        // listener would freeze the page at its first frame.
+        return ColoredBox(
+          color: const Color(0x00000000),
+          child: Overlay(
+            initialEntries: <OverlayEntry>[
+              OverlayEntry(
+                builder: (context) {
+                  return ListenableBuilder(
+                    listenable: controller,
+                    builder: (context, _) {
+                      final dark =
+                          MediaQuery.platformBrightnessOf(context) ==
+                          Brightness.dark;
+                      final palette = ClipPalette(
+                        dark: dark,
+                        systemAccent: controller.snapshot.accentColor,
+                        systemAccentFill: controller.snapshot.accentFill,
+                        systemAccentForeground:
+                            controller.snapshot.accentForeground,
+                      );
+                      // Windows runs settings in a dedicated engine window
+                      // (settings_window.dart); the palette view mounts a
+                      // `Window` subtree once the backend creates its
+                      // controller. On macOS the `settingsWindow` flag selects
+                      // content for the second engine.
+                      final settingsCtrl = _isWindows && !settingsWindow
+                          ? controller.settingsController
+                          : null;
+                      final page = settingsWindow
+                          ? SettingsPage(
+                              controller: controller,
+                              palette: palette,
+                            )
+                          : PalettePage(
+                              controller: controller,
+                              palette: palette,
+                            );
                       // Secondary views must live in a ViewAnchor's `view`
                       // slot — a `View` can't attach inside an ordinary
                       // render position.
@@ -85,11 +97,11 @@ class ClipwordApp extends StatelessWidget {
                               child: page,
                             );
                     },
-                  ),
-                ],
+                  );
+                },
               ),
-            );
-          },
+            ],
+          ),
         );
       },
     );
