@@ -32,14 +32,16 @@ class ClipwordApp extends StatelessWidget {
       pageRouteBuilder: <T>(settings, builder) {
         return PageRouteBuilder<T>(
           settings: settings,
-          pageBuilder: (context, animation, secondaryAnimation) => builder(context),
+          pageBuilder: (context, animation, secondaryAnimation) =>
+              builder(context),
         );
       },
       builder: (context, _) {
         return ListenableBuilder(
           listenable: controller,
           builder: (context, _) {
-            final dark = MediaQuery.platformBrightnessOf(context) == Brightness.dark;
+            final dark =
+                MediaQuery.platformBrightnessOf(context) == Brightness.dark;
             final palette = ClipPalette(
               dark: dark,
               systemAccent: controller.snapshot.accentColor,
@@ -58,20 +60,34 @@ class ClipwordApp extends StatelessWidget {
                 : PalettePage(controller: controller, palette: palette);
             return ColoredBox(
               color: const Color(0x00000000),
-              // Secondary views must live in a ViewAnchor's `view` slot —
-              // a `View` can't attach inside an ordinary render position.
-              child: settingsCtrl == null
-                  ? page
-                  : ViewAnchor(
-                      view: Window(
-                        controller: settingsCtrl as WindowController,
-                        child: ClipwordApp(
-                          controller: controller,
-                          settingsWindow: true,
-                        ),
-                      ),
-                      child: page,
-                    ),
+              // WidgetsApp only builds a Navigator/Overlay when routing
+              // params are given; a bare `builder` tree has none, and
+              // EditableText asserts on `debugCheckHasOverlay` the moment a
+              // tap tries to create its selection overlay. Insert one —
+              // both palette and settings views run through this builder.
+              child: Overlay(
+                initialEntries: <OverlayEntry>[
+                  OverlayEntry(
+                    builder: (context) {
+                      // Secondary views must live in a ViewAnchor's `view`
+                      // slot — a `View` can't attach inside an ordinary
+                      // render position.
+                      return settingsCtrl == null
+                          ? page
+                          : ViewAnchor(
+                              view: Window(
+                                controller: settingsCtrl as WindowController,
+                                child: ClipwordApp(
+                                  controller: controller,
+                                  settingsWindow: true,
+                                ),
+                              ),
+                              child: page,
+                            );
+                    },
+                  ),
+                ],
+              ),
             );
           },
         );
