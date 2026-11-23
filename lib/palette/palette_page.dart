@@ -1001,34 +1001,42 @@ class _PalettePageState extends State<PalettePage> {
                 key: key,
                 child: MouseRegion(
                   cursor: SystemMouseCursors.click,
-                  child: GestureDetector(
-                    key: selected ? _selectedRowKey : null,
-                    // onTap waits out the double-tap arena (~300ms) whenever
-                    // onDoubleTap exists — select on pointer-down instead,
-                    // like a native listbox; re-selecting on a double-click's
-                    // first tap is harmless.
-                    onTapDown: (_) {
-                      c.selectEntry(entry.kind, entry.id ?? '');
-                      _keepArrowKeys();
+                  child: Listener(
+                    // TapGestureRecognizer defers even onTapDown behind
+                    // kPressTimeout (100ms); a quick up then stalls on the
+                    // double-tap arena (~300ms) while onDoubleTap exists —
+                    // select on the raw pointer-down instead, like a native
+                    // listbox; re-selecting on a double-click's first tap is
+                    // harmless.
+                    onPointerDown: (event) {
+                      if (event.buttons & kPrimaryButton != 0) {
+                        c.selectEntry(entry.kind, entry.id ?? '');
+                        _keepArrowKeys();
+                      }
                     },
-                    onDoubleTap: () => c.activatePrimary(),
-                    onSecondaryTap: () =>
-                        c.channel.showItemMenu(kind: entry.kind, id: entry.id),
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: fill,
-                        borderRadius: BorderRadius.circular(
-                          ClipTokens.rowRadius,
-                        ),
+                    child: GestureDetector(
+                      key: selected ? _selectedRowKey : null,
+                      onDoubleTap: () => c.activatePrimary(),
+                      onSecondaryTap: () => c.channel.showItemMenu(
+                        kind: entry.kind,
+                        id: entry.id,
                       ),
-                      child: Padding(
-                        padding: EdgeInsets.fromLTRB(
-                          entry.indented ? 20 : 8,
-                          6,
-                          10,
-                          6,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: fill,
+                          borderRadius: BorderRadius.circular(
+                            ClipTokens.rowRadius,
+                          ),
                         ),
-                        child: _row(entry, emphasized),
+                        child: Padding(
+                          padding: EdgeInsets.fromLTRB(
+                            entry.indented ? 20 : 8,
+                            6,
+                            10,
+                            6,
+                          ),
+                          child: _row(entry, emphasized),
+                        ),
                       ),
                     ),
                   ),
